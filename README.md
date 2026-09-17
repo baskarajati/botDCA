@@ -78,7 +78,38 @@ botdca-compare-export \
   --match-window-seconds 300
 ```
 
-The comparator reports completed-cycle match rate, closing-time error, exit-price error, DCA-depth error, and exact DCA-depth match percentage. Use `--timezone-offset-minutes` when the export timestamps are not UTC.
+The comparator reports completed-cycle match rate, closing-time error, exit-price error, DCA-depth error, and exact DCA-depth match percentage. Use `--timezone` for the export's named timezone. `--timezone-offset-minutes` remains available for legacy fixed-offset files.
+
+## Build the historical evidence baseline
+
+Keep the private trader CSV outside the repository. Before calibration, profile its cycle
+structure and align it with exact Bybit one-minute candles:
+
+```bash
+botdca-profile-export \
+  --csv /path/to/bybit-trader-export.csv \
+  --symbol HYPEUSDT \
+  --timezone Europe/Rome \
+  --output /private/path/HYPEUSDT.trader-profile.json \
+  > /tmp/HYPEUSDT-profile-stdout.json
+```
+
+The command:
+
+- converts CSV timestamps through the named timezone and reports UTC output
+- merges only narrowly matching close fragments instead of relying on exact close strings
+- reports leverage/TP regimes, DCA depths, sizing multipliers, re-entry gaps, and holding times
+- caches public Bybit candles under `~/.cache/botdca/marketdata`
+- checks final weighted-average entries and closing prices against their one-minute ranges
+
+The aggregate report does not contain the private CSV rows. One-minute candles bound possible
+fills but do not establish exact second-level execution prices or intrabar ordering. Trigger
+midpoints are diagnostics, not calibrated strategy parameters. Historical master sizing is
+reported only as an approximate proxy because the export does not contain individual fill
+prices, wallet equity, available balance, funding payments, or cross-margin liquidation state.
+
+Use `--skip-market-data` for a CSV-only structural profile. Use
+`--refresh-market-data` to replace the exact-window public candle cache.
 
 ## Live orchestration
 

@@ -21,7 +21,16 @@ def main() -> None:
     parser.add_argument("--base-margin", type=float, default=1.0)
     parser.add_argument("--tp-percent", type=float, default=1.09)
     parser.add_argument("--fee-rate", type=float, default=0.00055)
-    parser.add_argument("--timezone-offset-minutes", type=int, default=0)
+    parser.add_argument(
+        "--timezone",
+        default="Europe/Rome",
+        help="IANA timezone of timestamps in the trader export",
+    )
+    parser.add_argument(
+        "--timezone-offset-minutes",
+        type=int,
+        help="Legacy fixed offset; overrides --timezone when supplied",
+    )
     parser.add_argument("--match-window-seconds", type=float, default=300.0)
     parser.add_argument(
         "--path",
@@ -32,7 +41,8 @@ def main() -> None:
 
     actual = load_trader_cycles(
         args.csv,
-        timezone_offset_minutes=args.timezone_offset_minutes,
+        timezone_offset_minutes=args.timezone_offset_minutes or 0,
+        timezone_name=args.timezone if args.timezone_offset_minutes is None else None,
     )
     actual = [cycle for cycle in actual if abs(cycle.leverage - args.leverage) < 1e-9]
     if not actual:
