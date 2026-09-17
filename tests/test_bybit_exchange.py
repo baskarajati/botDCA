@@ -50,6 +50,28 @@ class FakeSession:
             },
         }
 
+    def get_wallet_balance(self, **kwargs):
+        assert kwargs == {"accountType": "UNIFIED"}
+        return {
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {
+                "list": [
+                    {
+                        "totalEquity": "150.25",
+                        "totalWalletBalance": "151.00",
+                        "totalMarginBalance": "149.50",
+                        "totalAvailableBalance": "112.75",
+                        "totalInitialMargin": "36.75",
+                        "totalMaintenanceMargin": "2.25",
+                        "totalPerpUPL": "-1.50",
+                        "accountIMRate": "0.245",
+                        "accountMMRate": "0.015",
+                    }
+                ]
+            },
+        }
+
 
 def test_live_guard_blocks_mutating_orders() -> None:
     session = FakeSession()
@@ -93,6 +115,20 @@ def test_position_snapshot_comes_from_exchange() -> None:
     assert position.leverage == 24.0
     assert position.liquidation_price == 72.1
     assert position.is_open
+
+
+def test_account_snapshot_comes_from_unified_wallet() -> None:
+    exchange = BybitExchange(session=FakeSession(), live_trading=False)
+
+    account = exchange.get_account_snapshot()
+
+    assert account.total_equity_usd == 150.25
+    assert account.total_available_balance_usd == 112.75
+    assert account.total_initial_margin_usd == 36.75
+    assert account.total_maintenance_margin_usd == 2.25
+    assert account.total_perp_upl_usd == -1.5
+    assert account.account_im_rate == 0.245
+    assert account.account_mm_rate == 0.015
 
 
 def test_execution_message_supports_multiple_fills_and_symbol_filter() -> None:
