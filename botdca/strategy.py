@@ -46,6 +46,35 @@ class DcaStrategy:
         self.state = BotState.ACTIVE
         return cycle
 
+    def restore_cycle(
+        self,
+        *,
+        average_entry: float,
+        total_qty: float,
+        dca_level: int,
+        last_order_qty: float,
+        cycle_id: str | None = None,
+    ) -> TradingCycle:
+        if average_entry <= 0 or total_qty <= 0 or last_order_qty <= 0:
+            raise ValueError("restored position values must be positive")
+        if dca_level < 0 or dca_level > len(self.config.dca_steps):
+            raise ValueError("restored dca_level is outside configured ladder")
+
+        cycle = TradingCycle(
+            symbol=self.config.symbol,
+            leverage=self.config.leverage,
+            base_margin_usdt=self.config.base_margin_usdt,
+            tp_percent=self.config.tp_percent,
+            dca_level_override=dca_level,
+            last_order_qty_override=last_order_qty,
+        )
+        if cycle_id is not None:
+            cycle.id = cycle_id
+        cycle.fills.append(Fill(price=average_entry, qty=total_qty, kind="restored"))
+        self.current_cycle = cycle
+        self.state = BotState.ACTIVE
+        return cycle
+
     def next_dca_trigger_price(self) -> float | None:
         cycle = self.current_cycle
         if self.state != BotState.ACTIVE or cycle is None:
@@ -61,12 +90,14 @@ class DcaStrategy:
 
     def next_dca_qty(self) -> float | None:
         cycle = self.current_cycle
-        if self.state != BotState.ACTIVE or cycle is None or not cycle.fills:
+        if self.state != BotState.ACTIVE or cycle is None:
             return None
         level = cycle.dca_level
         if level >= len(self.config.dca_steps):
             return None
-        previous_qty = cycle.fills[-1].qty
+        previous_qty = cycle.last_order_qty
+        if previous_qty is None:
+            return None
         return previous_qty * self.config.dca_steps[level].size_multiplier_from_previous
 
     def should_take_profit(self, market_price: float) -> bool:
@@ -91,6 +122,9 @@ class DcaStrategy:
             raise RuntimeError("DCA ladder exhausted")
         fill = Fill(price=fill_price, qty=qty if qty is not None else expected_qty, kind="dca")
         cycle.fills.append(fill)
+        if cycle.dca_level_override is not None:
+            cycle.dca_level_override += 1
+            cycle.last_order_qty_override = fill.qty
         return fill
 
     def mark_closed(self, realized_pnl_usdt: float = 0.0) -> TradingCycle:
