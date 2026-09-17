@@ -140,6 +140,28 @@ ladder. Observed-regime results are in-sample diagnostics, not calibrated holdou
 Both low-first and high-first candle paths are reported because one-minute OHLC data does not
 identify intrabar ordering or the exact second-level initial fill.
 
+## Run bounded walk-forward calibration
+
+Calibration is intentionally narrower than strategy discovery. It uses the first 70% of each
+regime with at least 30 completed cycles for parameter selection and keeps the final 30% as an
+untouched chronological holdout:
+
+```bash
+botdca-calibrate-strategy \
+  --csv /path/to/bybit-trader-export.csv \
+  --symbol HYPEUSDT \
+  --timezone Europe/Rome \
+  --path both \
+  --output /private/path/HYPEUSDT.calibration.json \
+  > /tmp/HYPEUSDT-calibration-stdout.json
+```
+
+The search can adjust TP, sufficiently supported DCA trigger drops, and re-entry delay within
+documented bounds. DCA quantity multipliers remain fixed. Small regimes are skipped, both
+intrabar paths are retained, and validation failures are reported rather than used for further
+tuning. The command produces research evidence only; it does not update runtime defaults or
+enable live trading.
+
 ## Live orchestration
 
 `LiveStrategyService` follows a reconciliation-first workflow:

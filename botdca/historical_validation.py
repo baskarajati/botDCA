@@ -12,6 +12,99 @@ from botdca.strategy import StrategyConfig
 from botdca.trader_export import TraderCycle, TraderExportData
 
 
+def evaluate_anchored_cycles(
+    cycles: list[TraderCycle],
+    candles: list[Candle],
+    config: StrategyConfig,
+    *,
+    intrabar_path: IntrabarPath,
+    maximum_close_time_error_seconds: float = 300.0,
+    taker_fee_rate: float = 0.00055,
+) -> dict[str, Any]:
+    """Evaluate one independently anchored replay per observed cycle."""
+
+    ordered_candles = sorted(candles, key=lambda candle: candle.start_ms)
+    candle_times = [candle.start_ms for candle in ordered_candles]
+    actual: list[TraderCycle] = []
+    simulated: list[CycleReplay] = []
+    pairs: list[tuple[int, int]] = []
+    diagnostics: list[dict[str, Any]] = []
+    close_window_ms = int(maximum_close_time_error_seconds * 1000)
+    for cycle in cycles:
+        actual_index = len(actual)
+        actual.append(cycle)
+        start_ms = cycle.opened_ms // MINUTE_MS * MINUTE_MS
+        end_ms = cycle.closed_ms // MINUTE_MS * MINUTE_MS + close_window_ms
+        window = _candle_slice(ordered_candles, candle_times, start_ms, end_ms)
+        if not window:
+            diagnostics.append(_unmatched_diagnostic(cycle, 1, reason="missing_candles"))
+            continue
+        result = ReplayEngine(
+            config,
+            intrabar_path=intrabar_path,
+            taker_fee_rate=taker_fee_rate,
+            auto_reentry=False,
+            maximum_completed_cycles=1,
+        ).run(window)
+        if not result.cycles:
+            diagnostics.append(
+                _unmatched_diagnostic(cycle, 1, reason="simulated_cycle_still_open")
+            )
+            continue
+        candidate = result.cycles[0]
+        simulated_index = len(simulated)
+        simulated.append(candidate)
+        close_error = abs(candidate.closed_ms - cycle.closed_ms) / 1000
+        if close_error <= maximum_close_time_error_seconds:
+            pairs.append((actual_index, simulated_index))
+        else:
+            diagnostic = _unmatched_diagnostic(
+                cycle,
+                1,
+                reason="close_outside_match_window",
+            )
+            diagnostic["simulated_closed_utc"] = _iso_ms(candidate.closed_ms)
+            diagnostic["close_time_error_seconds"] = close_error
+            diagnostics.append(diagnostic)
+    metrics = _comparison_metrics(actual, simulated, pairs)
+    metrics["unmatched_actual_diagnostics"] = diagnostics[:25]
+    return metrics
+
+
+def evaluate_continuous_cycles(
+    cycles: list[TraderCycle],
+    candles: list[Candle],
+    config: StrategyConfig,
+    *,
+    intrabar_path: IntrabarPath,
+    maximum_close_time_error_seconds: float = 300.0,
+    reentry_delay_seconds: float = 48.0,
+    taker_fee_rate: float = 0.00055,
+) -> dict[str, Any]:
+    """Evaluate autonomous replay over one chronological set of cycles."""
+
+    if not cycles:
+        raise ValueError("at least one trader cycle is required")
+    ordered_candles = sorted(candles, key=lambda candle: candle.start_ms)
+    candle_times = [candle.start_ms for candle in ordered_candles]
+    close_window_ms = int(maximum_close_time_error_seconds * 1000)
+    start_ms = cycles[0].opened_ms // MINUTE_MS * MINUTE_MS
+    end_ms = cycles[-1].closed_ms // MINUTE_MS * MINUTE_MS + close_window_ms
+    window = _candle_slice(ordered_candles, candle_times, start_ms, end_ms)
+    result = ReplayEngine(
+        config,
+        intrabar_path=intrabar_path,
+        taker_fee_rate=taker_fee_rate,
+        reentry_delay_seconds=reentry_delay_seconds,
+    ).run(window)
+    pairs = _ordered_close_matches(
+        cycles,
+        result.cycles,
+        maximum_close_time_error_seconds=maximum_close_time_error_seconds,
+    )
+    return _comparison_metrics(cycles, result.cycles, pairs)
+
+
 def validate_strategy_history(
     export: TraderExportData,
     candles: list[Candle],
