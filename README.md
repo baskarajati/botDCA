@@ -4,9 +4,7 @@ Long-only geometric DCA trading bot for Bybit USDT perpetuals.
 
 ## Status
 
-Foundation + historical replay + live-execution infrastructure. Live trading is **disabled by default**. The current branch provides the strategy engine, dry-run executor, Bybit V5 execution/stream/reconciliation modules, persistence and recovery infrastructure, API shell, PostgreSQL-ready configuration, Docker setup, tests, a minute-candle backtester that uses the same `DcaStrategy` class as the runtime, and a lightweight operational dashboard.
-
-The branch also includes configurable DCA risk limits for maximum DCA depth and maximum strategy margin allocation. These are evaluated before a new DCA order is planned.
+Live trading remains **disabled by default**. The current branch contains the reconstructed strategy engine, minute-level historical replay, trader-export comparison, Bybit V5 REST/private-stream adapters, durable event persistence, exchange reconciliation, risk controls, live orchestration primitives, API/dashboard, Docker/PostgreSQL setup, and CI tests.
 
 ## Strategy v1
 
@@ -14,7 +12,7 @@ The branch also includes configurable DCA risk limits for maximum DCA depth and 
 - Default leverage: 24x
 - Base margin unit: 1 USDT
 - Take profit: +1.09% from weighted average entry
-- Immediate re-entry after a completed cycle
+- Re-entry after a completed cycle following the configured delay
 - Progressive DCA ladder reconstructed from historical HYPEUSDT trader data
 
 Default DCA steps are expressed as percentage drops from the current weighted average entry:
@@ -28,27 +26,33 @@ Default DCA steps are expressed as percentage drops from the current weighted av
 7. 5.53% / size x1.466
 8. 5.11% / size x1.467
 
-These values remain configurable and should be treated as reconstructed estimates until replay against the trader's exact execution history is complete.
+These remain configurable reconstructed estimates until validation against the full trader export is complete.
 
 ## Risk controls
 
-Default hard limits:
+Default limits:
 
 - `BOT_MAX_DCA_LEVEL=8`
 - `BOT_MAX_STRATEGY_MARGIN_USDT=80`
+- `BOT_MIN_AVAILABLE_BALANCE_USDT=0`
+- `BOT_MIN_AVAILABLE_EQUITY_RATIO=0.20`
 
-When the next DCA would exceed either limit, botDCA suppresses that DCA from the resting-order plan and surfaces the reason through runtime status. The take-profit order remains part of the plan.
+Before a DCA is planned, botDCA can check both strategy-level margin and the Bybit Unified Account `totalAvailableBalance`. The effective reserve floor is the larger of the absolute free-balance floor and the configured percentage of account equity. If the next DCA would breach that floor, the DCA is suppressed while the TP remains active.
+
+## Pause semantics
+
+`Pause` disables **re-entry**, not protection of an already-open basket. If a position is open, TP/DCA calculations and resting-order reconstruction remain available. When that basket closes, the strategy remains paused rather than starting another cycle.
+
+`Close position & pause` is stronger: the controller pauses first, cancels resting orders, re-reads the actual exchange position, submits a reduce-only market close, and remains paused. A REST acknowledgement is never treated as a confirmed fill; execution/position reconciliation must confirm the close.
 
 ## Historical replay
 
-The backtester fetches Bybit public linear-perpetual klines and traverses each candle as monotonic price segments. It executes DCA/TP thresholds inside the candle rather than only checking the close.
+The backtester fetches Bybit public linear-perpetual klines and traverses each candle as monotonic price segments, triggering DCA/TP levels inside the candle instead of checking only closes.
 
-Because OHLC candles do not reveal whether the high or low happened first, both intrabar assumptions are supported:
+Because OHLC candles do not reveal high/low ordering, both paths are supported:
 
 - `low-first`: open -> low -> high -> close
 - `high-first`: open -> high -> low -> close
-
-Run both paths on one-minute HYPE data:
 
 ```bash
 botdca-backtest \
@@ -59,13 +63,11 @@ botdca-backtest \
   --path both
 ```
 
-The JSON result includes completed cycles, gross and net realized P&L, taker fees, maximum DCA depth, maximum margin deployed, mark-to-market drawdown, and the final open-cycle P&L. Use `--include-cycles` to include every completed cycle.
-
-The public Bybit kline endpoint returns at most 1,000 candles per request; the market-data client paginates the requested period automatically.
+The result includes completed cycles, gross/net realized P&L, fees, maximum DCA depth, maximum strategy margin, mark-to-market drawdown, and final open-cycle P&L.
 
 ## Compare against a Bybit trader export
 
-Keep the CSV outside the repository and run the comparison locally:
+Keep the CSV outside the repository:
 
 ```bash
 botdca-compare-export \
@@ -76,21 +78,33 @@ botdca-compare-export \
   --match-window-seconds 300
 ```
 
-The comparator groups trader-initiated rows into completed cycles and aligns simulated cycles by closing time. It reports:
+The comparator reports completed-cycle match rate, closing-time error, exit-price error, DCA-depth error, and exact DCA-depth match percentage. Use `--timezone-offset-minutes` when the export timestamps are not UTC.
 
-- completed-cycle match rate
-- median closing-time error
-- median exit-price error
-- median absolute DCA-depth error
-- exact DCA-depth match percentage
+## Live orchestration
 
-If the timestamps in an export are not UTC, use `--timezone-offset-minutes` to normalize them before comparison. The source CSV is read only at runtime and is not persisted by botDCA.
+`LiveStrategyService` follows a reconciliation-first workflow:
+
+1. read the actual exchange position
+2. if flat and re-entry is enabled, enforce reserve limits before submitting an initial entry
+3. if open, reconcile the position against persisted executions
+4. cancel stale resting orders only after reconciliation succeeds
+5. place TP first
+6. place the next DCA only if strategy and account reserve limits allow it
+
+`LiveWorker` combines this service with the private Bybit execution/order/position stream and records every sync/error event. The worker is **not auto-started merely by importing or starting the API**.
 
 ## Dashboard
 
-The FastAPI root (`/`) serves a lightweight operational dashboard. It displays strategy state, weighted-average entry, current DCA level, next DCA price, take-profit price, committed margin, projected margin after the next DCA, and whether that DCA is allowed by the configured risk limits.
+The FastAPI root (`/`) serves an operations dashboard showing:
 
-The dashboard exposes pause, resume, and close-and-pause controls. Live manual close remains blocked until the live controller is fully wired and tested.
+- strategy state and live/dry-run mode
+- average entry, position size, DCA level, next DCA, TP
+- Unified Account equity and available balance when API credentials are configured
+- perpetual unrealized P&L and maintenance margin
+- strategy margin cap and account reserve floor
+- account-aware next-DCA permission and reason
+
+Controls include resume, pause, and close-position-and-pause.
 
 ## Local development
 
@@ -101,19 +115,13 @@ docker compose up --build
 
 Dashboard/API: `http://localhost:8000`
 
-Health check:
-
 ```bash
 curl http://localhost:8000/health
-```
-
-Strategy status:
-
-```bash
 curl http://localhost:8000/api/v1/bot/status
+curl http://localhost:8000/api/v1/account/status
 ```
 
-Run tests locally:
+Run tests:
 
 ```bash
 pip install -e '.[dev]'
@@ -124,16 +132,17 @@ pytest -q
 ## Safety defaults
 
 - `BOT_LIVE_TRADING=false`
-- No withdrawal or transfer functionality
-- Manual close always pauses the strategy
-- Live Bybit execution is gated behind explicit configuration
-- Strategy state is reconciled against exchange state before recovery actions
-- DCA planning is bounded by configured depth and margin limits
+- no withdrawal or transfer functionality
+- live mutations require explicit live mode and credentials
+- REST acknowledgements are never assumed to be fills
+- unexpected short positions are refused
+- DCA planning is bounded by depth, strategy-margin, and account-reserve limits
+- worker errors fail closed by pausing re-entry
 
-## Planned next milestones
+## Remaining before production use
 
-1. Validate minute-level replay against the exported HYPE trader cycles
-2. Harden live order lifecycle, idempotency, and exchange-hosted TP/DCA behavior
-3. Complete persistence/restart recovery integration tests
-4. Add account-equity/free-margin guardrails
-5. Finish live dashboard portfolio data and manual-close wiring
+1. Validate minute-level replay directly against the complete exported HYPE trader history
+2. Wire deployment-time construction/start/stop of the live worker explicitly
+3. Add end-to-end restart/reconciliation integration tests against Bybit testnet or demo
+4. Harden order idempotency/replacement behavior under disconnects and partial fills
+5. Finalize VPS/Tailscale deployment and operational runbook
