@@ -11,10 +11,10 @@ class BybitApiError(RuntimeError):
     pass
 
 
-def _as_order_qty(qty: float) -> str:
-    if qty <= 0:
-        raise ValueError("qty must be positive")
-    return f"{qty:.12f}".rstrip("0").rstrip(".")
+def _as_order_number(value: float) -> str:
+    if value <= 0:
+        raise ValueError("order value must be positive")
+    return f"{value:.12f}".rstrip("0").rstrip(".")
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -106,12 +106,12 @@ class BybitExchange:
         )
 
     def open_long(self, symbol: str, qty: float) -> OrderAck:
-        return self._place_long(symbol, qty, prefix="open")
+        return self._place_market_long(symbol, qty, prefix="open")
 
     def add_long(self, symbol: str, qty: float) -> OrderAck:
-        return self._place_long(symbol, qty, prefix="dca")
+        return self._place_market_long(symbol, qty, prefix="dca-market")
 
-    def _place_long(self, symbol: str, qty: float, *, prefix: str) -> OrderAck:
+    def _place_market_long(self, symbol: str, qty: float, *, prefix: str) -> OrderAck:
         self._require_live()
         order_link_id = new_order_link_id(prefix)
         response = self._require_ok(
@@ -120,8 +120,45 @@ class BybitExchange:
                 symbol=symbol.upper(),
                 side="Buy",
                 orderType="Market",
-                qty=_as_order_qty(qty),
+                qty=_as_order_number(qty),
                 positionIdx=0,
+                orderLinkId=order_link_id,
+            )
+        )
+        return self._ack(response, order_link_id)
+
+    def place_dca_limit(self, symbol: str, qty: float, price: float) -> OrderAck:
+        self._require_live()
+        order_link_id = new_order_link_id("dca")
+        response = self._require_ok(
+            self.session.place_order(
+                category="linear",
+                symbol=symbol.upper(),
+                side="Buy",
+                orderType="Limit",
+                qty=_as_order_number(qty),
+                price=_as_order_number(price),
+                timeInForce="GTC",
+                positionIdx=0,
+                orderLinkId=order_link_id,
+            )
+        )
+        return self._ack(response, order_link_id)
+
+    def place_tp_limit(self, symbol: str, qty: float, price: float) -> OrderAck:
+        self._require_live()
+        order_link_id = new_order_link_id("tp")
+        response = self._require_ok(
+            self.session.place_order(
+                category="linear",
+                symbol=symbol.upper(),
+                side="Sell",
+                orderType="Limit",
+                qty=_as_order_number(qty),
+                price=_as_order_number(price),
+                timeInForce="GTC",
+                positionIdx=0,
+                reduceOnly=True,
                 orderLinkId=order_link_id,
             )
         )
@@ -136,7 +173,7 @@ class BybitExchange:
                 symbol=symbol.upper(),
                 side="Sell",
                 orderType="Market",
-                qty=_as_order_qty(qty),
+                qty=_as_order_number(qty),
                 positionIdx=0,
                 reduceOnly=True,
                 orderLinkId=order_link_id,
