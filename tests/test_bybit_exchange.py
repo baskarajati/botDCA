@@ -194,3 +194,47 @@ def test_position_message_parses_flat_position() -> None:
     assert events[0].size == 0.0
     assert events[0].liquidation_price is None
     assert events[0].creation_time_ms == 1234
+
+
+class UncertainSubmitSession(FakeSession):
+    def __init__(self) -> None:
+        super().__init__()
+        self.accepted: dict | None = None
+
+    def get_open_orders(self, **kwargs):
+        rows = []
+        if self.accepted is not None and self.accepted["orderLinkId"] == kwargs.get("orderLinkId"):
+            rows = [self.accepted]
+        return {"retCode": 0, "retMsg": "OK", "result": {"list": rows}}
+
+    def get_order_history(self, **kwargs):
+        return {"retCode": 0, "retMsg": "OK", "result": {"list": []}}
+
+    def place_order(self, **kwargs):
+        self.place_calls.append(kwargs)
+        self.accepted = {
+            **kwargs,
+            "orderId": "accepted-before-timeout",
+            "orderStatus": "New",
+        }
+        raise TimeoutError("response lost after exchange acceptance")
+
+
+def test_uncertain_submit_recovers_by_stable_order_link_id() -> None:
+    session = UncertainSubmitSession()
+    exchange = BybitExchange(session=session, live_trading=True)
+
+    first = exchange.open_long(
+        "HYPEUSDT",
+        0.3,
+        order_link_id="botdca-open-stable",
+    )
+    second = exchange.open_long(
+        "HYPEUSDT",
+        0.3,
+        order_link_id="botdca-open-stable",
+    )
+
+    assert first == second
+    assert first.order_id == "accepted-before-timeout"
+    assert len(session.place_calls) == 1

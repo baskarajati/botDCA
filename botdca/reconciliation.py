@@ -57,5 +57,6 @@ def reconcile_strategy(
         total_qty=position.size,
         dca_level=summary.dca_level,
         last_order_qty=summary.last_order_qty,
+        cycle_id=summary.cycle_id,
     )
     return ReconciliationResult("restored", position, summary.dca_level)

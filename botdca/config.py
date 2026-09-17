@@ -9,6 +9,11 @@ class Settings(BaseSettings):
 
     bot_env: str = Field(default="development", alias="BOT_ENV")
     bot_live_trading: bool = Field(default=False, alias="BOT_LIVE_TRADING")
+    bot_start_live_worker: bool = Field(default=False, alias="BOT_START_LIVE_WORKER")
+    bot_worker_interval_seconds: float = Field(
+        default=2.0,
+        alias="BOT_WORKER_INTERVAL_SECONDS",
+    )
     bot_symbol: str = Field(default="HYPEUSDT", alias="BOT_SYMBOL")
     bot_leverage: int = Field(default=24, alias="BOT_LEVERAGE")
     bot_base_margin_usdt: float = Field(default=1.0, alias="BOT_BASE_MARGIN_USDT")

@@ -91,7 +91,9 @@ The comparator reports completed-cycle match rate, closing-time error, exit-pric
 5. place TP first
 6. place the next DCA only if strategy and account reserve limits allow it
 
-`LiveWorker` combines this service with the private Bybit execution/order/position stream and records every sync/error event. The worker is **not auto-started merely by importing or starting the API**.
+`LiveWorker` combines this service with the private Bybit execution/order/position stream and records every sync/error event. FastAPI constructs and starts the authenticated worker only when both `BOT_LIVE_TRADING=true` and `BOT_START_LIVE_WORKER=true`. Missing credentials fail startup. A PostgreSQL advisory lease prevents a second worker for the same symbol.
+
+Orders use stable client identities. A restart reuses matching TP/DCA orders instead of cancelling and recreating them, and an uncertain REST response is recovered by querying Bybit with the same identity. Stale TP orders are replaced protection-first; stale DCA orders are removed before their replacement so two entry liabilities are not active together. A disconnected private stream is restarted before the next reconciliation pass.
 
 ## Dashboard
 
@@ -132,6 +134,7 @@ pytest -q
 ## Safety defaults
 
 - `BOT_LIVE_TRADING=false`
+- `BOT_START_LIVE_WORKER=false`
 - no withdrawal or transfer functionality
 - live mutations require explicit live mode and credentials
 - REST acknowledgements are never assumed to be fills
@@ -142,7 +145,6 @@ pytest -q
 ## Remaining before production use
 
 1. Validate minute-level replay directly against the complete exported HYPE trader history
-2. Wire deployment-time construction/start/stop of the live worker explicitly
-3. Add end-to-end restart/reconciliation integration tests against Bybit testnet or demo
-4. Harden order idempotency/replacement behavior under disconnects and partial fills
-5. Finalize VPS/Tailscale deployment and operational runbook
+2. Run operator-approved end-to-end reconciliation tests against Bybit testnet or demo
+3. Validate partial-fill behavior with recorded exchange fixtures and testnet fault injection
+4. Finalize VPS/Tailscale deployment and operational runbook

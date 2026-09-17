@@ -1,7 +1,7 @@
 import pytest
 
 from botdca.controller import ControllerSafetyError, TradingController
-from botdca.exchange import OrderAck, PositionSnapshot
+from botdca.exchange import OpenOrder, OrderAck, PositionSnapshot
 from botdca.strategy import DcaStrategy, StrategyConfig
 
 
@@ -9,6 +9,7 @@ class FakeExchange:
     def __init__(self, position: PositionSnapshot) -> None:
         self.position = position
         self.calls: list[tuple] = []
+        self.open_orders: list[OpenOrder] = []
 
     def set_leverage(self, symbol: str, leverage: int) -> None:
         self.calls.append(("set_leverage", symbol, leverage))
@@ -16,6 +17,10 @@ class FakeExchange:
     def get_position(self, symbol: str) -> PositionSnapshot:
         self.calls.append(("get_position", symbol))
         return self.position
+
+    def get_open_orders(self, symbol: str) -> list[OpenOrder]:
+        self.calls.append(("get_open_orders", symbol))
+        return list(self.open_orders)
 
     def open_long(self, symbol: str, qty: float) -> OrderAck:
         self.calls.append(("open_long", symbol, qty))
@@ -33,12 +38,17 @@ class FakeExchange:
         self.calls.append(("place_tp_limit", symbol, qty, price))
         return OrderAck("tp", "link-tp")
 
-    def close_long(self, symbol: str, qty: float) -> OrderAck:
+    def close_long(
+        self, symbol: str, qty: float, *, order_link_id: str | None = None
+    ) -> OrderAck:
         self.calls.append(("close_long", symbol, qty))
-        return OrderAck("close", "link-close")
+        return OrderAck("close", order_link_id or "link-close")
 
     def cancel_all(self, symbol: str) -> None:
         self.calls.append(("cancel_all", symbol))
+
+    def cancel_order(self, symbol: str, order_id: str) -> None:
+        self.calls.append(("cancel_order", symbol, order_id))
 
 
 def _strategy() -> DcaStrategy:
@@ -73,7 +83,7 @@ def test_manual_close_pauses_cancels_then_submits_reduce_close() -> None:
     assert result.status == "close_submitted"
     assert result.close_order is not None
     assert exchange.calls == [
-        ("cancel_all", "HYPEUSDT"),
+        ("get_open_orders", "HYPEUSDT"),
         ("get_position", "HYPEUSDT"),
         ("close_long", "HYPEUSDT", 0.3),
     ]
@@ -91,7 +101,7 @@ def test_manual_close_clears_local_cycle_only_when_exchange_is_already_flat() ->
     assert strategy.current_cycle is None
     assert strategy.state.value == "paused"
     assert exchange.calls == [
-        ("cancel_all", "HYPEUSDT"),
+        ("get_open_orders", "HYPEUSDT"),
         ("get_position", "HYPEUSDT"),
     ]
 
@@ -107,3 +117,21 @@ def test_manual_close_refuses_unexpected_short_and_stays_paused() -> None:
     assert strategy.state.value == "paused"
     assert strategy.current_cycle is not None
     assert not any(call[0] == "close_long" for call in exchange.calls)
+
+
+def test_manual_close_cancels_only_bot_owned_orders() -> None:
+    strategy = _strategy()
+    exchange = FakeExchange(_position())
+    exchange.open_orders = [
+        OpenOrder(
+            "bot-order", "botdca-tp-1", "HYPEUSDT", "Sell", "Limit", 81, 0.3, True, "New"
+        ),
+        OpenOrder(
+            "user-order", "manual-hedge", "HYPEUSDT", "Sell", "Limit", 90, 0.1, False, "New"
+        ),
+    ]
+
+    TradingController(strategy=strategy, exchange=exchange, symbol="HYPEUSDT").manual_close_and_pause()
+
+    assert ("cancel_order", "HYPEUSDT", "bot-order") in exchange.calls
+    assert ("cancel_order", "HYPEUSDT", "user-order") not in exchange.calls

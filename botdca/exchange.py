@@ -17,6 +17,19 @@ class OrderAck:
 
 
 @dataclass(frozen=True)
+class OpenOrder:
+    order_id: str
+    order_link_id: str
+    symbol: str
+    side: str
+    order_type: str
+    price: float
+    qty: float
+    reduce_only: bool
+    status: str
+
+
+@dataclass(frozen=True)
 class PositionSnapshot:
     symbol: str
     side: str
@@ -50,12 +63,22 @@ class ExchangeExecutor(Protocol):
     def get_position(self, symbol: str) -> PositionSnapshot: ...
     def get_account_snapshot(self) -> AccountSnapshot: ...
     def get_last_price(self, symbol: str) -> float: ...
-    def open_long(self, symbol: str, qty: float) -> OrderAck: ...
+    def get_open_orders(self, symbol: str) -> list[OpenOrder]: ...
+    def open_long(
+        self, symbol: str, qty: float, *, order_link_id: str | None = None
+    ) -> OrderAck: ...
     def add_long(self, symbol: str, qty: float) -> OrderAck: ...
-    def place_dca_limit(self, symbol: str, qty: float, price: float) -> OrderAck: ...
-    def place_tp_limit(self, symbol: str, qty: float, price: float) -> OrderAck: ...
-    def close_long(self, symbol: str, qty: float) -> OrderAck: ...
+    def place_dca_limit(
+        self, symbol: str, qty: float, price: float, *, order_link_id: str | None = None
+    ) -> OrderAck: ...
+    def place_tp_limit(
+        self, symbol: str, qty: float, price: float, *, order_link_id: str | None = None
+    ) -> OrderAck: ...
+    def close_long(
+        self, symbol: str, qty: float, *, order_link_id: str | None = None
+    ) -> OrderAck: ...
     def cancel_all(self, symbol: str) -> None: ...
+    def cancel_order(self, symbol: str, order_id: str) -> None: ...
 
 
 def new_order_link_id(prefix: str) -> str:
@@ -121,20 +144,34 @@ class DryRunExecutor:
     def get_last_price(self, symbol: str) -> float:
         return self.last_price
 
-    def open_long(self, symbol: str, qty: float) -> OrderAck:
+    def get_open_orders(self, symbol: str) -> list[OpenOrder]:
+        return []
+
+    def open_long(
+        self, symbol: str, qty: float, *, order_link_id: str | None = None
+    ) -> OrderAck:
         return self._ack("open")
 
     def add_long(self, symbol: str, qty: float) -> OrderAck:
         return self._ack("dca-market")
 
-    def place_dca_limit(self, symbol: str, qty: float, price: float) -> OrderAck:
+    def place_dca_limit(
+        self, symbol: str, qty: float, price: float, *, order_link_id: str | None = None
+    ) -> OrderAck:
         return self._ack("dca")
 
-    def place_tp_limit(self, symbol: str, qty: float, price: float) -> OrderAck:
+    def place_tp_limit(
+        self, symbol: str, qty: float, price: float, *, order_link_id: str | None = None
+    ) -> OrderAck:
         return self._ack("tp")
 
-    def close_long(self, symbol: str, qty: float) -> OrderAck:
+    def close_long(
+        self, symbol: str, qty: float, *, order_link_id: str | None = None
+    ) -> OrderAck:
         return self._ack("close")
 
     def cancel_all(self, symbol: str) -> None:
+        return None
+
+    def cancel_order(self, symbol: str, order_id: str) -> None:
         return None

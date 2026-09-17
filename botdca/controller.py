@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from botdca.exchange import ExchangeExecutor, OrderAck, PositionSnapshot
+from botdca.order_identity import deterministic_order_link_id
 from botdca.strategy import DcaStrategy
 
 
@@ -40,7 +41,9 @@ class TradingController:
         # Pause first so a flat-position observation cannot trigger a re-entry
         # while cancellation/close requests are in flight.
         self.strategy.pause()
-        self.exchange.cancel_all(self.symbol)
+        for order in self.exchange.get_open_orders(self.symbol):
+            if order.order_link_id.startswith("botdca-"):
+                self.exchange.cancel_order(self.symbol, order.order_id)
 
         position = self.exchange.get_position(self.symbol)
         if not position.is_open:
@@ -59,7 +62,21 @@ class TradingController:
                 f"{position.side or 'unknown'}"
             )
 
-        close_order = self.exchange.close_long(self.symbol, position.size)
+        cycle_identity = (
+            self.strategy.current_cycle.id
+            if self.strategy.current_cycle is not None
+            else f"{position.average_entry}:{position.size}"
+        )
+        close_order = self.exchange.close_long(
+            self.symbol,
+            position.size,
+            order_link_id=deterministic_order_link_id(
+                "close",
+                self.symbol,
+                cycle_identity,
+                position.size,
+            ),
+        )
         return ManualCloseResult(
             status="close_submitted",
             position_before_close=position,

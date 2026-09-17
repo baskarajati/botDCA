@@ -9,6 +9,8 @@ from botdca.persistence import EventStore
 
 
 class PrivateStream(Protocol):
+    @property
+    def connected(self) -> bool: ...
     def start(self) -> None: ...
     def stop(self) -> None: ...
 
@@ -47,6 +49,14 @@ class LiveWorker:
         return bool(thread is not None and thread.is_alive())
 
     def run_once(self) -> LiveSyncResult:
+        if not self.stream.connected:
+            self.stream.stop()
+            self.stream.start()
+            self.store.record_strategy_event(
+                event_type="LIVE_STREAM_RECONNECTED",
+                symbol=self.service.symbol,
+                payload={},
+            )
         result = self.service.sync()
         self.last_result = result
         self.last_error = None
@@ -75,10 +85,12 @@ class LiveWorker:
         with self._lock:
             self._stop.set()
             thread = self._thread
+            self.stream.stop()
             if thread is not None:
                 thread.join(timeout=max(5.0, self.interval_seconds * 2))
+                if thread.is_alive():
+                    raise RuntimeError("live worker did not stop within the safety timeout")
             self._thread = None
-            self.stream.stop()
 
     def _run(self) -> None:
         while not self._stop.is_set():

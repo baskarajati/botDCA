@@ -29,6 +29,14 @@ class BybitPrivateStream:
         self.websocket_factory = websocket_factory
         self.websocket: Any | None = None
 
+    @property
+    def connected(self) -> bool:
+        websocket = self.websocket
+        if websocket is None:
+            return False
+        is_connected = getattr(websocket, "is_connected", None)
+        return bool(is_connected()) if callable(is_connected) else True
+
     def start(self) -> None:
         if self.websocket is not None:
             raise RuntimeError("private stream is already started")
