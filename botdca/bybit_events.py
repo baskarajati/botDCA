@@ -38,6 +38,24 @@ class PositionEvent:
     creation_time_ms: int
 
 
+@dataclass(frozen=True)
+class OrderEvent:
+    symbol: str
+    order_id: str
+    order_link_id: str
+    side: str
+    order_type: str
+    status: str
+    price: float
+    qty: float
+    cumulative_executed_qty: float
+    average_price: float
+    reduce_only: bool
+    reject_reason: str
+    cancel_type: str
+    updated_time_ms: int
+
+
 def parse_execution_message(
     message: dict[str, Any], *, symbol: str | None = None
 ) -> list[ExecutionEvent]:
@@ -91,6 +109,39 @@ def parse_position_message(
                 unrealized_pnl=_float(item.get("unrealisedPnl")),
                 position_idx=int(item.get("positionIdx") or 0),
                 creation_time_ms=creation_time,
+            )
+        )
+    return events
+
+
+def parse_order_message(
+    message: dict[str, Any], *, symbol: str | None = None
+) -> list[OrderEvent]:
+    wanted = symbol.upper() if symbol else None
+    creation_time = int(message.get("creationTime") or 0)
+    events: list[OrderEvent] = []
+    for item in message.get("data", []):
+        if item.get("category") != "linear":
+            continue
+        item_symbol = str(item.get("symbol", "")).upper()
+        if wanted and item_symbol != wanted:
+            continue
+        events.append(
+            OrderEvent(
+                symbol=item_symbol,
+                order_id=str(item.get("orderId", "")),
+                order_link_id=str(item.get("orderLinkId", "")),
+                side=str(item.get("side", "")),
+                order_type=str(item.get("orderType", "")),
+                status=str(item.get("orderStatus", "")),
+                price=_float(item.get("price")),
+                qty=_float(item.get("qty")),
+                cumulative_executed_qty=_float(item.get("cumExecQty")),
+                average_price=_float(item.get("avgPrice")),
+                reduce_only=bool(item.get("reduceOnly", False)),
+                reject_reason=str(item.get("rejectReason", "")),
+                cancel_type=str(item.get("cancelType", "")),
+                updated_time_ms=int(item.get("updatedTime") or creation_time),
             )
         )
     return events
