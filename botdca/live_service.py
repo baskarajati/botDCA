@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from time import monotonic
-from typing import Callable
 
 from botdca.domain import BotState
 from botdca.exchange import AccountSnapshot, ExchangeExecutor, OrderAck, PositionSnapshot
@@ -148,8 +148,6 @@ class LiveStrategyService:
                 dca_blocked_reason=str(exc),
             )
 
-        # Existing resting orders were derived from an older position size or
-        # average. Cancel them before rebuilding from the reconciled state.
         self.exchange.cancel_all(self.symbol)
         account = self.exchange.get_account_snapshot()
         plan = build_resting_order_plan(
