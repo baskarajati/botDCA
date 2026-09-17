@@ -33,11 +33,31 @@ def test_first_dca_trigger_and_weighted_average() -> None:
     assert cycle.tp_price < 101.09
 
 
-def test_pause_and_close_state_transitions() -> None:
+def test_pause_keeps_open_cycle_manageable_but_disables_reentry() -> None:
     strategy = DcaStrategy(StrategyConfig())
     strategy.resume()
     strategy.begin_cycle(100.0)
-    strategy.mark_closed(0.25)
-    assert strategy.current_cycle is None
+
     strategy.pause()
+
     assert strategy.state.value == "paused"
+    assert strategy.reentry_enabled is False
+    assert strategy.next_dca_trigger_price() is not None
+    assert strategy.should_take_profit(101.09)
+
+    strategy.mark_closed(0.25)
+
+    assert strategy.current_cycle is None
+    assert strategy.state.value == "paused"
+
+
+def test_resume_after_paused_cycle_restores_active_management() -> None:
+    strategy = DcaStrategy(StrategyConfig())
+    strategy.resume()
+    strategy.begin_cycle(100.0)
+    strategy.pause()
+
+    strategy.resume()
+
+    assert strategy.state.value == "active"
+    assert strategy.reentry_enabled is True
