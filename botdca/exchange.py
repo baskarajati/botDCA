@@ -49,6 +49,7 @@ class ExchangeExecutor(Protocol):
     def set_leverage(self, symbol: str, leverage: int) -> None: ...
     def get_position(self, symbol: str) -> PositionSnapshot: ...
     def get_account_snapshot(self) -> AccountSnapshot: ...
+    def get_last_price(self, symbol: str) -> float: ...
     def open_long(self, symbol: str, qty: float) -> OrderAck: ...
     def add_long(self, symbol: str, qty: float) -> OrderAck: ...
     def place_dca_limit(self, symbol: str, qty: float, price: float) -> OrderAck: ...
@@ -67,6 +68,7 @@ class DryRunExecutor:
 
     def __init__(self) -> None:
         self.counter = 0
+        self.last_price = 0.0
         self.position = PositionSnapshot(
             symbol="",
             side="",
@@ -115,6 +117,9 @@ class DryRunExecutor:
 
     def get_account_snapshot(self) -> AccountSnapshot:
         return self.account
+
+    def get_last_price(self, symbol: str) -> float:
+        return self.last_price
 
     def open_long(self, symbol: str, qty: float) -> OrderAck:
         return self._ack("open")
