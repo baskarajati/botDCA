@@ -23,6 +23,7 @@ dev = [
 
 [project.scripts]
 botdca-backtest = "botdca.backtest_cli:main"
+botdca-compare-export = "botdca.trader_compare_cli:main"
 
 [build-system]
 requires = ["setuptools>=80"]
