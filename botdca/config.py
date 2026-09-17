@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     bot_base_margin_usdt: float = Field(default=1.0, alias="BOT_BASE_MARGIN_USDT")
     bot_tp_percent: float = Field(default=1.09, alias="BOT_TP_PERCENT")
     bot_reentry_delay_seconds: int = Field(default=30, alias="BOT_REENTRY_DELAY_SECONDS")
+    bot_max_dca_level: int = Field(default=8, alias="BOT_MAX_DCA_LEVEL")
+    bot_max_strategy_margin_usdt: float = Field(
+        default=80.0,
+        alias="BOT_MAX_STRATEGY_MARGIN_USDT",
+    )
 
     database_url: str = Field(
         default="postgresql+psycopg://botdca:botdca@db:5432/botdca",
