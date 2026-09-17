@@ -140,6 +140,29 @@ ladder. Observed-regime results are in-sample diagnostics, not calibrated holdou
 Both low-first and high-first candle paths are reported because one-minute OHLC data does not
 identify intrabar ordering or the exact second-level initial fill.
 
+## Identify entry timing and sparse deep DCA behavior
+
+Use the aggregate export and cached one-minute candles to test entry/re-entry hypotheses and
+to keep the few observed DCA9-DCA10 cycles separated by leverage/TP regime:
+
+```bash
+botdca-identify-entry \
+  --csv /path/to/bybit-trader-export.csv \
+  --symbol HYPEUSDT \
+  --timezone Europe/Rome \
+  --output /private/path/HYPEUSDT.entry-identification.json \
+  > /tmp/HYPEUSDT-entry-identification-stdout.json
+```
+
+The timing comparison learns a scheduler phase from the first 70% of transitions and evaluates
+it on the final 30%. It compares a literal fixed-delay model with an attempt near the next
+one-minute candle boundary and reports skipped-minute behavior separately. DCA trigger evidence
+is bounded by each entry-minute candle and the exported final weighted-average entry; it does
+not invent unavailable individual fill prices.
+
+Sparse deep levels are reported by regime and never merged into the runtime ladder. The command
+is an identification tool only: it does not update runtime defaults or enable live trading.
+
 ## Run bounded walk-forward calibration
 
 Calibration is intentionally narrower than strategy discovery. It uses the first 70% of each

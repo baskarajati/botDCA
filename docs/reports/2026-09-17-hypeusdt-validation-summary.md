@@ -24,6 +24,47 @@ continuous matching improved from 48.6% to 62.9%, but remained well below the
 90% target. Runtime defaults were therefore not changed and `strategy-v1` is
 not ready to lock.
 
+## Entry and re-entry identification
+
+The 304 observed cycle transitions reject a literal fixed 48-second re-entry
+rule. On the final 30% chronological holdout (92 transitions), its median
+absolute timing error was 13.5 seconds. A scheduler trained only on the first
+70%—the next UTC minute boundary plus second 4—reduced median absolute error to
+2.0 seconds. It did not explain every transition: 79/92 (85.9%) occurred in the
+immediately following minute, while the others skipped one or more minute
+boundaries.
+
+The defensible rule is therefore a minute-scheduled entry attempt with an
+unobserved admission or pause condition. “Next candle open” is a useful
+minute-resolution replay proxy, not proof of the trader's exact order logic.
+For the 137 cycles with a directly identifiable DCA0 fill, median absolute
+entry-price error was 0.0358% versus the entry-minute open and 0.0787% versus
+the close; every price was inside that minute's range.
+
+Long pauses are strongly associated with deep prior cycles but do not reveal a
+deterministic cooldown. Five of eight transitions after DCA8 or deeper skipped
+more than five scheduled minutes, compared with two of 296 shallower
+transitions (one-sided Fisher exact probability 5.52e-8). The deep sample is
+too small to infer how long a pause should last or which hidden condition
+released it.
+
+## DCA9-DCA10 evidence
+
+The three deep observations belong to different strategy regimes and cannot be
+pooled:
+
+| Regime | Level | Samples | Quantity vs prior add | Constrained trigger-drop evidence | Interpretation |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Older 20x | DCA9 | 1 | 1.4096x | 1.8117%-2.5941% | Continuation of an older geometric ladder |
+| Older 20x | DCA10 | 1 | 1.4188x | 2.2369%-2.6216% | Continuation of an older geometric ladder |
+| Mature 24x | DCA9 | 2 | 1.0066x-1.0074x | 5.7667%-6.3651% | Candidate capped emergency add |
+
+The trigger ranges are constrained estimates derived from one-minute candle
+ranges and the exported final weighted-average entry, not exact fill prices.
+Two mature samples are insufficient to add DCA9 to production, and the lone
+DCA10 observation is not evidence for the current 24x regime. Runtime defaults
+remain unchanged.
+
 ## Simulated economics and path risk
 
 Economics cover the 263 cycles in regimes 3 and 4. They describe autonomous
@@ -71,5 +112,7 @@ The preregistered tail-risk hypothesis is supported: every tested baseline and
 calibrated profile required more than 54x the initial entry notional after the
 full ladder, and the 20% post-ladder loss was roughly 234x estimated round-trip
 fees. Small TP and trigger changes did not remove the dominant geometric
-exposure. Further tuning should not proceed until the entry/re-entry mechanism
-is better identified and funding/slippage evidence is available.
+exposure. Entry timing is now narrowed to a next-minute scheduled attempt plus
+an unobserved gate, but that gate and the sparse deep-DCA behavior remain
+unidentified. Further tuning should wait for more regime-consistent deep-cycle
+samples and funding/slippage evidence.
