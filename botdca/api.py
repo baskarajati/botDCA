@@ -1,13 +1,20 @@
 from dataclasses import asdict
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 
 from botdca.config import get_settings
+from botdca.dashboard import DASHBOARD_HTML
 from botdca.runtime import BotRuntime
 
 settings = get_settings()
 runtime = BotRuntime(settings)
 app = FastAPI(title="botDCA", version="0.1.0")
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard() -> HTMLResponse:
+    return HTMLResponse(DASHBOARD_HTML)
 
 
 @app.get("/health")
@@ -35,6 +42,6 @@ def manual_close() -> dict:
     if settings.bot_live_trading:
         raise HTTPException(
             status_code=501,
-            detail="Live manual close is intentionally disabled until the Bybit executor is implemented.",
+            detail="Live manual close is intentionally disabled until live controller wiring is complete.",
         )
     return asdict(runtime.manual_close_and_pause())
