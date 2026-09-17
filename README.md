@@ -4,7 +4,7 @@ Long-only geometric DCA trading bot for Bybit USDT perpetuals.
 
 ## Status
 
-Foundation only. Live trading is **disabled by default**. The current branch provides the strategy engine, dry-run executor, API shell, PostgreSQL-ready configuration, Docker setup, and tests.
+Foundation + historical replay. Live trading is **disabled by default**. The current branch provides the strategy engine, dry-run executor, API shell, PostgreSQL-ready configuration, Docker setup, tests, and a minute-candle backtester that uses the same `DcaStrategy` class as the runtime.
 
 ## Strategy v1
 
@@ -26,7 +26,31 @@ Default DCA steps are expressed as percentage drops from the current weighted av
 7. 5.53% / size x1.466
 8. 5.11% / size x1.467
 
-These values remain configurable and should be treated as reconstructed estimates until minute-level historical replay finishes validation.
+These values remain configurable and should be treated as reconstructed estimates until replay against the trader's exact execution history is complete.
+
+## Historical replay
+
+The backtester fetches Bybit public linear-perpetual klines and traverses each candle as monotonic price segments. It executes DCA/TP thresholds inside the candle rather than only checking the close.
+
+Because OHLC candles do not reveal whether the high or low happened first, both intrabar assumptions are supported:
+
+- `low-first`: open -> low -> high -> close
+- `high-first`: open -> high -> low -> close
+
+Run both paths on one-minute HYPE data:
+
+```bash
+botdca-backtest \
+  --symbol HYPEUSDT \
+  --start 2026-08-03T00:00:00Z \
+  --end 2026-09-16T23:59:00Z \
+  --interval 1 \
+  --path both
+```
+
+The JSON result includes completed cycles, gross and net realized P&L, taker fees, maximum DCA depth, maximum margin deployed, mark-to-market drawdown, and the final open-cycle P&L. Use `--include-cycles` to include every completed cycle.
+
+The public Bybit kline endpoint returns at most 1,000 candles per request; the market-data client paginates the requested period automatically.
 
 ## Local development
 
@@ -49,6 +73,14 @@ Strategy status:
 curl http://localhost:8000/api/v1/bot/status
 ```
 
+Run tests locally:
+
+```bash
+pip install -e '.[dev]'
+ruff check botdca tests
+pytest -q
+```
+
 ## Safety defaults
 
 - `BOT_LIVE_TRADING=false`
@@ -59,7 +91,7 @@ curl http://localhost:8000/api/v1/bot/status
 
 ## Planned next milestones
 
-1. Minute/tick historical replay using the same strategy engine
+1. Validate minute-level replay against the exported HYPE trader cycles
 2. Bybit V5 live adapter + private WebSocket reconciliation
 3. PostgreSQL event persistence
 4. Exchange-hosted TP/DCA order management
