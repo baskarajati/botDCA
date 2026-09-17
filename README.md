@@ -162,6 +162,36 @@ intrabar paths are retained, and validation failures are reported rather than us
 tuning. The command produces research evidence only; it does not update runtime defaults or
 enable live trading.
 
+## Analyze economics and tail risk
+
+Use the saved calibration report to compare baseline and calibrated replay economics on the
+regimes with enough evidence:
+
+```bash
+botdca-analyze-risk \
+  --csv /path/to/bybit-trader-export.csv \
+  --calibration-report /private/path/HYPEUSDT.calibration.json \
+  --symbol HYPEUSDT \
+  --timezone Europe/Rome \
+  --path both \
+  --fee-rate 0.00055 \
+  --maintenance-margin-rate 0.005 \
+  --output /private/path/HYPEUSDT.risk.json \
+  > /tmp/HYPEUSDT-risk-stdout.json
+```
+
+The report separates entry fees, exit fees, gross realized P&L, and net realized P&L. It also
+reports peak strategy margin, peak position notional, worst floating P&L, drawdown, cycle
+duration, minute-resolution underwater/recovery time, MAE/MFE, and DCA-depth frequency.
+Funding is excluded unless a timestamped `FundingModel` is supplied; the report never inserts
+invented historical rates.
+
+Tail stress exhausts the runtime DCA ladder and then shocks price another 5%, 10%, and 20% from
+the final DCA fill. Its account-equity figure is a configurable reserve proxy, not an exact Bybit
+UTA liquidation value. See
+[`docs/reports/2026-09-17-hypeusdt-validation-summary.md`](docs/reports/2026-09-17-hypeusdt-validation-summary.md)
+for the current research result and limitations.
+
 ## Live orchestration
 
 `LiveStrategyService` follows a reconciliation-first workflow:
