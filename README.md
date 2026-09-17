@@ -52,6 +52,29 @@ The JSON result includes completed cycles, gross and net realized P&L, taker fee
 
 The public Bybit kline endpoint returns at most 1,000 candles per request; the market-data client paginates the requested period automatically.
 
+## Compare against a Bybit trader export
+
+Keep the CSV outside the repository and run the comparison locally:
+
+```bash
+botdca-compare-export \
+  --csv /path/to/bybit-trader-export.csv \
+  --symbol HYPEUSDT \
+  --leverage 24 \
+  --path both \
+  --match-window-seconds 300
+```
+
+The comparator groups trader-initiated rows into completed cycles and aligns simulated cycles by closing time. It reports:
+
+- completed-cycle match rate
+- median closing-time error
+- median exit-price error
+- median absolute DCA-depth error
+- exact DCA-depth match percentage
+
+If the timestamps in an export are not UTC, use `--timezone-offset-minutes` to normalize them before comparison. The source CSV is read only at runtime and is not persisted by botDCA.
+
 ## Local development
 
 ```bash
@@ -92,7 +115,7 @@ pytest -q
 ## Planned next milestones
 
 1. Validate minute-level replay against the exported HYPE trader cycles
-2. Bybit V5 live adapter + private WebSocket reconciliation
-3. PostgreSQL event persistence
+2. Harden Bybit V5 execution + private WebSocket reconciliation
+3. PostgreSQL event persistence and restart recovery
 4. Exchange-hosted TP/DCA order management
 5. Dashboard with portfolio, DCA ladder, manual close, pause, resume, and emergency stop
