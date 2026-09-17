@@ -19,6 +19,14 @@ class Settings(BaseSettings):
         default=80.0,
         alias="BOT_MAX_STRATEGY_MARGIN_USDT",
     )
+    bot_min_available_balance_usdt: float = Field(
+        default=0.0,
+        alias="BOT_MIN_AVAILABLE_BALANCE_USDT",
+    )
+    bot_min_available_equity_ratio: float = Field(
+        default=0.20,
+        alias="BOT_MIN_AVAILABLE_EQUITY_RATIO",
+    )
 
     database_url: str = Field(
         default="postgresql+psycopg://botdca:botdca@db:5432/botdca",
