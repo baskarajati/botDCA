@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from pybit.unified_trading import HTTP
+
 from botdca.backtest import Candle
 
 
