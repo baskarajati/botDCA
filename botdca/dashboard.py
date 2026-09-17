@@ -49,12 +49,21 @@ DASHBOARD_HTML = r"""<!doctype html>
     <div class="card"><div class="label">Take profit</div><div class="value" id="tp">—</div><div class="sub" id="live-mode">—</div></div>
   </div>
 
+  <section class="grid">
+    <div class="card"><div class="label">Account equity</div><div class="value" id="equity">—</div><div class="sub">USD</div></div>
+    <div class="card"><div class="label">Available balance</div><div class="value" id="available">—</div><div class="sub">USD</div></div>
+    <div class="card"><div class="label">Perpetual UPL</div><div class="value" id="upl">—</div><div class="sub">USD</div></div>
+    <div class="card"><div class="label">Maintenance margin</div><div class="value" id="maintenance">—</div><div class="sub">USD</div></div>
+  </section>
+
   <section class="card">
     <div class="label">Risk</div>
     <table>
-      <tr><td>Committed margin</td><td id="margin">—</td></tr>
+      <tr><td>Committed strategy margin</td><td id="margin">—</td></tr>
       <tr><td>Maximum strategy margin</td><td id="margin-max">—</td></tr>
-      <tr><td>Projected after next DCA</td><td id="margin-projected">—</td></tr>
+      <tr><td>Projected strategy margin after next DCA</td><td id="margin-projected">—</td></tr>
+      <tr><td>Account reserve floor</td><td id="reserve-floor">—</td></tr>
+      <tr><td>Projected available balance after next DCA</td><td id="available-projected">—</td></tr>
       <tr><td>Next DCA allowed</td><td id="dca-allowed">—</td></tr>
       <tr><td>Risk message</td><td id="risk-message">—</td></tr>
     </table>
@@ -71,8 +80,14 @@ DASHBOARD_HTML = r"""<!doctype html>
 const f=(v,d=4)=>v===null||v===undefined?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:d});
 async function load(){
   try{
-    const r=await fetch('/api/v1/bot/status',{cache:'no-store'}); if(!r.ok) throw new Error(await r.text());
-    const s=await r.json();
+    const [botResponse,accountResponse]=await Promise.all([
+      fetch('/api/v1/bot/status',{cache:'no-store'}),
+      fetch('/api/v1/account/status',{cache:'no-store'})
+    ]);
+    if(!botResponse.ok) throw new Error(await botResponse.text());
+    if(!accountResponse.ok) throw new Error(await accountResponse.text());
+    const s=await botResponse.json();
+    const a=await accountResponse.json();
     document.querySelector('#state').textContent=s.state;
     const dot=document.querySelector('#dot'); dot.className='dot '+(s.state==='paused'?'paused':'running');
     document.querySelector('#symbol').textContent=s.symbol;
@@ -86,9 +101,32 @@ async function load(){
     document.querySelector('#margin').textContent=`${f(s.committed_margin_usdt)} USDT`;
     document.querySelector('#margin-max').textContent=`${f(s.max_strategy_margin_usdt)} USDT`;
     document.querySelector('#margin-projected').textContent=`${f(s.projected_margin_after_next_dca_usdt)} USDT`;
-    document.querySelector('#dca-allowed').textContent=s.next_dca_allowed?'Yes':'No';
-    const msg=document.querySelector('#risk-message'); msg.textContent=s.dca_blocked_reason||'Within configured limits';
-    msg.className=s.next_dca_allowed?'':'warning';
+
+    let riskAllowed=s.next_dca_allowed;
+    let riskMessage=s.dca_blocked_reason||'Within configured strategy limits';
+    document.querySelector('#equity').textContent='—';
+    document.querySelector('#available').textContent='—';
+    document.querySelector('#upl').textContent='—';
+    document.querySelector('#maintenance').textContent='—';
+    document.querySelector('#reserve-floor').textContent=`${f(Math.max(s.min_available_balance_usdt,0))} USD minimum`;
+    document.querySelector('#available-projected').textContent='—';
+
+    if(a.configured && a.account){
+      document.querySelector('#equity').textContent=f(a.account.total_equity_usd,2);
+      document.querySelector('#available').textContent=f(a.account.total_available_balance_usd,2);
+      document.querySelector('#upl').textContent=f(a.account.total_perp_upl_usd,2);
+      document.querySelector('#maintenance').textContent=f(a.account.total_maintenance_margin_usd,2);
+      if(a.dca_risk){
+        riskAllowed=a.dca_risk.allowed;
+        riskMessage=a.dca_risk.reason||'Within configured strategy and account reserve limits';
+        document.querySelector('#reserve-floor').textContent=`${f(a.dca_risk.reserve_floor_usd,2)} USD`;
+        document.querySelector('#available-projected').textContent=`${f(a.dca_risk.projected_available_balance_usd,2)} USD`;
+      }
+    }
+
+    document.querySelector('#dca-allowed').textContent=riskAllowed?'Yes':'No';
+    const msg=document.querySelector('#risk-message'); msg.textContent=riskMessage;
+    msg.className=riskAllowed?'':'warning';
     document.querySelector('#error').textContent='';
   }catch(e){ document.querySelector('#error').textContent=String(e); }
 }
