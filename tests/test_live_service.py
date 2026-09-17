@@ -89,8 +89,8 @@ def _rules() -> InstrumentRules:
         tick_size=Decimal("0.01"),
         qty_step=Decimal("0.001"),
         min_order_qty=Decimal("0.01"),
-        min_notional_value=Decimal("5"),
-        max_market_order_qty=Decimal("100"),
+        min_notional_value=Decimal(5),
+        max_market_order_qty=Decimal(100),
     )
 
 
