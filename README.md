@@ -4,7 +4,7 @@ Long-only geometric DCA trading bot for Bybit USDT perpetuals.
 
 ## Status
 
-Foundation + historical replay + live-execution infrastructure. Live trading is **disabled by default**. The current branch provides the strategy engine, dry-run executor, Bybit V5 execution/stream/reconciliation modules, persistence and recovery infrastructure, API shell, PostgreSQL-ready configuration, Docker setup, tests, and a minute-candle backtester that uses the same `DcaStrategy` class as the runtime.
+Foundation + historical replay + live-execution infrastructure. Live trading is **disabled by default**. The current branch provides the strategy engine, dry-run executor, Bybit V5 execution/stream/reconciliation modules, persistence and recovery infrastructure, API shell, PostgreSQL-ready configuration, Docker setup, tests, a minute-candle backtester that uses the same `DcaStrategy` class as the runtime, and a lightweight operational dashboard.
 
 The branch also includes configurable DCA risk limits for maximum DCA depth and maximum strategy margin allocation. These are evaluated before a new DCA order is planned.
 
@@ -86,6 +86,12 @@ The comparator groups trader-initiated rows into completed cycles and aligns sim
 
 If the timestamps in an export are not UTC, use `--timezone-offset-minutes` to normalize them before comparison. The source CSV is read only at runtime and is not persisted by botDCA.
 
+## Dashboard
+
+The FastAPI root (`/`) serves a lightweight operational dashboard. It displays strategy state, weighted-average entry, current DCA level, next DCA price, take-profit price, committed margin, projected margin after the next DCA, and whether that DCA is allowed by the configured risk limits.
+
+The dashboard exposes pause, resume, and close-and-pause controls. Live manual close remains blocked until the live controller is fully wired and tested.
+
 ## Local development
 
 ```bash
@@ -93,7 +99,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-API: `http://localhost:8000`
+Dashboard/API: `http://localhost:8000`
 
 Health check:
 
@@ -130,4 +136,4 @@ pytest -q
 2. Harden live order lifecycle, idempotency, and exchange-hosted TP/DCA behavior
 3. Complete persistence/restart recovery integration tests
 4. Add account-equity/free-margin guardrails
-5. Dashboard with portfolio, DCA ladder, manual close, pause, resume, and emergency stop
+5. Finish live dashboard portfolio data and manual-close wiring
