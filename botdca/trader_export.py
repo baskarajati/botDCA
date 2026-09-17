@@ -162,8 +162,8 @@ def compare_replay_to_trader(
 
 
 def _parse_timestamp(value: str, tz: timezone) -> datetime:
-    parsed = datetime.strptime(value.strip(), "%Y-%m-%d %H:%M:%S")
-    return parsed.replace(tzinfo=tz).astimezone(UTC)
+    parsed = datetime.fromisoformat(value.strip()).replace(tzinfo=tz)
+    return parsed.astimezone(UTC)
 
 
 def _to_ms(value: datetime) -> int:
