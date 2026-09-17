@@ -24,6 +24,8 @@ class RuntimeSnapshot:
     committed_margin_usdt: float
     max_strategy_margin_usdt: float
     max_dca_level: int
+    min_available_balance_usdt: float
+    min_available_equity_ratio: float
     next_dca_allowed: bool
     projected_margin_after_next_dca_usdt: float
     dca_blocked_reason: str | None
@@ -43,6 +45,8 @@ class BotRuntime:
         self.risk_limits = RiskLimits(
             max_dca_level=settings.bot_max_dca_level,
             max_strategy_margin_usdt=settings.bot_max_strategy_margin_usdt,
+            min_available_balance_usdt=settings.bot_min_available_balance_usdt,
+            min_available_equity_ratio=settings.bot_min_available_equity_ratio,
         )
         self._lock = RLock()
 
@@ -65,6 +69,8 @@ class BotRuntime:
                 committed_margin_usdt=margin,
                 max_strategy_margin_usdt=self.risk_limits.max_strategy_margin_usdt,
                 max_dca_level=self.risk_limits.max_dca_level,
+                min_available_balance_usdt=self.risk_limits.min_available_balance_usdt,
+                min_available_equity_ratio=self.risk_limits.min_available_equity_ratio,
                 next_dca_allowed=decision.allowed,
                 projected_margin_after_next_dca_usdt=decision.projected_margin_usdt,
                 dca_blocked_reason=decision.reason,
@@ -82,7 +88,6 @@ class BotRuntime:
 
     def manual_close_and_pause(self) -> RuntimeSnapshot:
         with self._lock:
-            # Exchange cancellation / reduce-only close will be wired in the live adapter milestone.
             if self.strategy.current_cycle is not None:
                 self.strategy.mark_closed(realized_pnl_usdt=0.0)
             self.strategy.pause()
