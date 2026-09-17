@@ -59,9 +59,7 @@ class EventStore:
             if record is None:
                 record = OrderStateRecord(order_id=event.order_id)
                 session.add(record)
-            elif event.updated_time_ms < record.updated_time_ms:
-                return False
-            elif (
+            elif event.updated_time_ms < record.updated_time_ms or (
                 event.updated_time_ms == record.updated_time_ms
                 and event.status == record.status
                 and event.cumulative_executed_qty == record.cumulative_executed_qty
