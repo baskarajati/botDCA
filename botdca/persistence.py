@@ -6,10 +6,11 @@ from typing import Any
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 
-from botdca.bybit_events import ExecutionEvent, PositionEvent
+from botdca.bybit_events import ExecutionEvent, OrderEvent, PositionEvent
 from botdca.database import (
     Database,
     ExecutionRecord,
+    OrderStateRecord,
     PositionSnapshotRecord,
     StrategyEventRecord,
 )
@@ -49,6 +50,40 @@ class EventStore:
             except IntegrityError:
                 session.rollback()
                 return False
+        return True
+
+    def record_order(self, event: OrderEvent) -> bool:
+        """Upsert the latest state for an order; duplicate/stale events are ignored."""
+        with self.database.session_factory() as session:
+            record = session.get(OrderStateRecord, event.order_id)
+            if record is None:
+                record = OrderStateRecord(order_id=event.order_id)
+                session.add(record)
+            elif event.updated_time_ms < record.updated_time_ms:
+                return False
+            elif (
+                event.updated_time_ms == record.updated_time_ms
+                and event.status == record.status
+                and event.cumulative_executed_qty == record.cumulative_executed_qty
+                and event.reject_reason == record.reject_reason
+                and event.cancel_type == record.cancel_type
+            ):
+                return False
+
+            record.order_link_id = event.order_link_id
+            record.symbol = event.symbol
+            record.side = event.side
+            record.order_type = event.order_type
+            record.status = event.status
+            record.price = event.price
+            record.qty = event.qty
+            record.cumulative_executed_qty = event.cumulative_executed_qty
+            record.average_price = event.average_price
+            record.reduce_only = event.reduce_only
+            record.reject_reason = event.reject_reason
+            record.cancel_type = event.cancel_type
+            record.updated_time_ms = event.updated_time_ms
+            session.commit()
         return True
 
     def record_position(self, event: PositionEvent) -> int:
@@ -99,6 +134,19 @@ class EventStore:
         )
         with self.database.session_factory() as session:
             return session.scalar(statement)
+
+    def active_bot_orders(self, symbol: str) -> list[OrderStateRecord]:
+        statement = (
+            select(OrderStateRecord)
+            .where(
+                OrderStateRecord.symbol == symbol.upper(),
+                OrderStateRecord.order_link_id.like("botdca-%"),
+                OrderStateRecord.status.in_(("New", "PartiallyFilled", "Untriggered")),
+            )
+            .order_by(OrderStateRecord.updated_time_ms, OrderStateRecord.order_id)
+        )
+        with self.database.session_factory() as session:
+            return list(session.scalars(statement))
 
     def open_cycle_execution_summary(self, symbol: str) -> OpenCycleExecutionSummary | None:
         statement = (
