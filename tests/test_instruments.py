@@ -34,7 +34,7 @@ def test_instrument_rules_are_loaded_from_bybit_metadata() -> None:
     assert rules.tick_size == Decimal("0.01")
     assert rules.qty_step == Decimal("0.001")
     assert rules.min_order_qty == Decimal("0.01")
-    assert rules.min_notional_value == Decimal("5")
+    assert rules.min_notional_value == Decimal(5)
 
 
 def test_quantity_and_prices_use_directional_quantization() -> None:
@@ -43,8 +43,8 @@ def test_quantity_and_prices_use_directional_quantization() -> None:
         tick_size=Decimal("0.01"),
         qty_step=Decimal("0.001"),
         min_order_qty=Decimal("0.01"),
-        min_notional_value=Decimal("5"),
-        max_market_order_qty=Decimal("100"),
+        min_notional_value=Decimal(5),
+        max_market_order_qty=Decimal(100),
     )
 
     assert rules.floor_qty(0.1239) == Decimal("0.123")
@@ -58,7 +58,7 @@ def test_quantity_below_minimum_is_rejected() -> None:
         tick_size=Decimal("0.01"),
         qty_step=Decimal("0.01"),
         min_order_qty=Decimal("0.1"),
-        min_notional_value=Decimal("5"),
+        min_notional_value=Decimal(5),
         max_market_order_qty=None,
     )
 
