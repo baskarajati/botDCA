@@ -6,6 +6,8 @@ Long-only geometric DCA trading bot for Bybit USDT perpetuals.
 
 Foundation + historical replay + live-execution infrastructure. Live trading is **disabled by default**. The current branch provides the strategy engine, dry-run executor, Bybit V5 execution/stream/reconciliation modules, persistence and recovery infrastructure, API shell, PostgreSQL-ready configuration, Docker setup, tests, and a minute-candle backtester that uses the same `DcaStrategy` class as the runtime.
 
+The branch also includes configurable DCA risk limits for maximum DCA depth and maximum strategy margin allocation. These are evaluated before a new DCA order is planned.
+
 ## Strategy v1
 
 - Long only
@@ -27,6 +29,15 @@ Default DCA steps are expressed as percentage drops from the current weighted av
 8. 5.11% / size x1.467
 
 These values remain configurable and should be treated as reconstructed estimates until replay against the trader's exact execution history is complete.
+
+## Risk controls
+
+Default hard limits:
+
+- `BOT_MAX_DCA_LEVEL=8`
+- `BOT_MAX_STRATEGY_MARGIN_USDT=80`
+
+When the next DCA would exceed either limit, botDCA suppresses that DCA from the resting-order plan and surfaces the reason through runtime status. The take-profit order remains part of the plan.
 
 ## Historical replay
 
@@ -111,11 +122,12 @@ pytest -q
 - Manual close always pauses the strategy
 - Live Bybit execution is gated behind explicit configuration
 - Strategy state is reconciled against exchange state before recovery actions
+- DCA planning is bounded by configured depth and margin limits
 
 ## Planned next milestones
 
 1. Validate minute-level replay against the exported HYPE trader cycles
 2. Harden live order lifecycle, idempotency, and exchange-hosted TP/DCA behavior
 3. Complete persistence/restart recovery integration tests
-4. Add portfolio-level risk limits and capital-reserve controls
+4. Add account-equity/free-margin guardrails
 5. Dashboard with portfolio, DCA ladder, manual close, pause, resume, and emergency stop
