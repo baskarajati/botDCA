@@ -32,9 +32,23 @@ class PositionSnapshot:
         return self.size > 0
 
 
+@dataclass(frozen=True)
+class AccountSnapshot:
+    total_equity_usd: float
+    total_wallet_balance_usd: float
+    total_margin_balance_usd: float
+    total_available_balance_usd: float
+    total_initial_margin_usd: float
+    total_maintenance_margin_usd: float
+    total_perp_upl_usd: float
+    account_im_rate: float
+    account_mm_rate: float
+
+
 class ExchangeExecutor(Protocol):
     def set_leverage(self, symbol: str, leverage: int) -> None: ...
     def get_position(self, symbol: str) -> PositionSnapshot: ...
+    def get_account_snapshot(self) -> AccountSnapshot: ...
     def open_long(self, symbol: str, qty: float) -> OrderAck: ...
     def add_long(self, symbol: str, qty: float) -> OrderAck: ...
     def place_dca_limit(self, symbol: str, qty: float, price: float) -> OrderAck: ...
@@ -63,6 +77,17 @@ class DryRunExecutor:
             liquidation_price=None,
             unrealized_pnl=0.0,
         )
+        self.account = AccountSnapshot(
+            total_equity_usd=0.0,
+            total_wallet_balance_usd=0.0,
+            total_margin_balance_usd=0.0,
+            total_available_balance_usd=0.0,
+            total_initial_margin_usd=0.0,
+            total_maintenance_margin_usd=0.0,
+            total_perp_upl_usd=0.0,
+            account_im_rate=0.0,
+            account_mm_rate=0.0,
+        )
 
     def _ack(self, prefix: str) -> OrderAck:
         self.counter += 1
@@ -87,6 +112,9 @@ class DryRunExecutor:
                 unrealized_pnl=self.position.unrealized_pnl,
             )
         return PositionSnapshot(symbol, "", 0.0, 0.0, 0.0, 0.0, None, 0.0)
+
+    def get_account_snapshot(self) -> AccountSnapshot:
+        return self.account
 
     def open_long(self, symbol: str, qty: float) -> OrderAck:
         return self._ack("open")
