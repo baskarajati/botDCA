@@ -72,3 +72,17 @@ def test_restored_cycle_preserves_next_dca_sizing() -> None:
     assert cycle.dca_level == 3
     assert cycle.last_order_qty == pytest.approx(0.40 * 1.430)
     assert cycle.total_qty > 1.5
+
+
+def test_open_cycle_summary_keeps_partial_sell_in_same_cycle() -> None:
+    database = Database("sqlite+pysqlite:///:memory:")
+    database.create_schema()
+    store = EventStore(database)
+    store.record_execution(execution("e1", "open", "Buy", 80.0, 1.0, 100))
+    store.record_execution(execution("e2", "tp", "Sell", 81.0, 0.25, 200))
+
+    summary = store.open_cycle_execution_summary("HYPEUSDT")
+
+    assert summary is not None
+    assert summary.total_buy_qty == pytest.approx(0.75)
+    assert summary.order_count == 1

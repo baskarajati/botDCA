@@ -50,6 +50,10 @@ class BotRuntime:
         )
         self._lock = RLock()
 
+    @property
+    def lock(self) -> RLock:
+        return self._lock
+
     def snapshot(self) -> RuntimeSnapshot:
         with self._lock:
             cycle = self.strategy.current_cycle

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Any
 
 from sqlalchemy import desc, select
@@ -18,6 +19,7 @@ from botdca.database import (
 
 @dataclass(frozen=True)
 class OpenCycleExecutionSummary:
+    cycle_id: str
     order_count: int
     dca_level: int
     total_buy_qty: float
@@ -155,11 +157,17 @@ class EventStore:
         with self.database.session_factory() as session:
             rows = list(session.scalars(statement))
 
-        last_sell_index = -1
-        for index, row in enumerate(rows):
-            if row.side == "Sell":
-                last_sell_index = index
-        open_rows = [row for row in rows[last_sell_index + 1 :] if row.side == "Buy"]
+        open_rows: list[ExecutionRecord] = []
+        net_qty = 0.0
+        for row in rows:
+            if row.side == "Buy":
+                open_rows.append(row)
+                net_qty += row.qty
+            elif row.side == "Sell":
+                net_qty -= row.qty
+                if net_qty <= 1e-9:
+                    open_rows = []
+                    net_qty = 0.0
         if not open_rows:
             return None
 
@@ -172,17 +180,35 @@ class EventStore:
                 order_sequence.append(key)
             orders[key].append(row)
 
-        total_qty = sum(row.qty for row in open_rows)
-        weighted_average = sum(row.price * row.qty for row in open_rows) / total_qty
+        gross_buy_qty = sum(row.qty for row in open_rows)
+        weighted_average = sum(row.price * row.qty for row in open_rows) / gross_buy_qty
         last_order_qty = sum(row.qty for row in orders[order_sequence[-1]])
         order_count = len(order_sequence)
+        execution_identity = "|".join(row.execution_id for row in open_rows)
+        cycle_id = f"recovered-{sha256(execution_identity.encode()).hexdigest()[:20]}"
         return OpenCycleExecutionSummary(
+            cycle_id=cycle_id,
             order_count=order_count,
             dca_level=max(0, order_count - 1),
-            total_buy_qty=total_qty,
+            total_buy_qty=net_qty,
             weighted_average_buy_price=weighted_average,
             last_order_qty=last_order_qty,
         )
+
+    def entry_generation(self, symbol: str) -> str:
+        """Stable identity for the next entry until another sell execution closes a cycle."""
+        statement = (
+            select(ExecutionRecord)
+            .where(
+                ExecutionRecord.symbol == symbol.upper(),
+                ExecutionRecord.side == "Sell",
+            )
+            .order_by(desc(ExecutionRecord.execution_time_ms), desc(ExecutionRecord.execution_id))
+            .limit(1)
+        )
+        with self.database.session_factory() as session:
+            latest_sell = session.scalar(statement)
+        return latest_sell.execution_id if latest_sell is not None else "initial"
 
     def execution_count(self) -> int:
         with self.database.session_factory() as session:

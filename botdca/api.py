@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 
 from fastapi import FastAPI, HTTPException
@@ -7,12 +8,31 @@ from botdca.bybit_exchange import BybitApiError, BybitExchange
 from botdca.config import get_settings
 from botdca.controller import ControllerSafetyError, TradingController
 from botdca.dashboard import DASHBOARD_HTML
+from botdca.live_runtime import LiveWorkerDeployment, build_live_worker_deployment
 from botdca.risk import evaluate_next_dca
 from botdca.runtime import BotRuntime
 
 settings = get_settings()
 runtime = BotRuntime(settings)
-app = FastAPI(title="botDCA", version="0.1.0")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    deployment: LiveWorkerDeployment | None = None
+    app.state.live_worker = None
+    if settings.bot_start_live_worker:
+        deployment = build_live_worker_deployment(settings, runtime)
+        deployment.start()
+        app.state.live_worker = deployment.worker
+    try:
+        yield
+    finally:
+        if deployment is not None:
+            deployment.stop()
+        app.state.live_worker = None
+
+
+app = FastAPI(title="botDCA", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -21,8 +41,14 @@ def dashboard() -> HTMLResponse:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict:
+    worker = getattr(app.state, "live_worker", None)
+    return {
+        "status": "ok",
+        "live_worker_enabled": settings.bot_start_live_worker,
+        "live_worker_running": bool(worker is not None and worker.running),
+        "live_worker_last_error": worker.last_error if worker is not None else None,
+    }
 
 
 @app.get("/api/v1/bot/status")
@@ -93,7 +119,8 @@ def manual_close() -> dict:
 
     controller = _live_controller()
     try:
-        result = controller.manual_close_and_pause()
+        with runtime.lock:
+            result = controller.manual_close_and_pause()
     except ControllerSafetyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except BybitApiError as exc:

@@ -10,9 +10,16 @@ class FakeStream:
     def __init__(self) -> None:
         self.started = False
         self.stopped = False
+        self.start_count = 0
+
+    @property
+    def connected(self) -> bool:
+        return self.started and not self.stopped
 
     def start(self) -> None:
         self.started = True
+        self.stopped = False
+        self.start_count += 1
 
     def stop(self) -> None:
         self.stopped = True
@@ -58,9 +65,11 @@ class FakeService:
 def test_run_once_records_durable_sync_event() -> None:
     service = FakeService()
     store = FakeStore()
+    stream = FakeStream()
+    stream.start()
     worker = LiveWorker(
         service=service,
-        stream=FakeStream(),
+        stream=stream,
         store=store,
         interval_seconds=1.0,
     )
@@ -94,3 +103,20 @@ def test_worker_starts_stream_runs_and_stops_cleanly() -> None:
     assert stream.stopped is True
     assert worker.running is False
     assert service.calls >= 1
+
+
+def test_worker_reconnects_stream_before_sync() -> None:
+    service = FakeService()
+    store = FakeStore()
+    stream = FakeStream()
+    stream.start()
+    stream.stopped = True
+    worker = LiveWorker(service=service, stream=stream, store=store)
+
+    worker.run_once()
+
+    assert stream.start_count == 2
+    assert [event["event_type"] for event in store.events] == [
+        "LIVE_STREAM_RECONNECTED",
+        "LIVE_SYNC",
+    ]
