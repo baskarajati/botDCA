@@ -131,6 +131,19 @@ class BybitExchange:
             account_mm_rate=_as_float(row.get("accountMMRate")),
         )
 
+    def get_last_price(self, symbol: str) -> float:
+        symbol = symbol.upper()
+        response = self._require_ok(
+            self.session.get_tickers(category="linear", symbol=symbol)
+        )
+        rows = response.get("result", {}).get("list", [])
+        if not rows:
+            raise BybitApiError(f"Bybit ticker response did not contain {symbol}")
+        price = _as_float(rows[0].get("lastPrice"))
+        if price <= 0:
+            raise BybitApiError(f"Bybit ticker returned invalid last price for {symbol}")
+        return price
+
     def open_long(self, symbol: str, qty: float) -> OrderAck:
         return self._place_market_long(symbol, qty, prefix="open")
 
