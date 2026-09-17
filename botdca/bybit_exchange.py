@@ -4,7 +4,13 @@ from typing import Any
 
 from pybit.unified_trading import HTTP
 
-from botdca.exchange import LiveTradingDisabled, OrderAck, PositionSnapshot, new_order_link_id
+from botdca.exchange import (
+    AccountSnapshot,
+    LiveTradingDisabled,
+    OrderAck,
+    PositionSnapshot,
+    new_order_link_id,
+)
 
 
 class BybitApiError(RuntimeError):
@@ -103,6 +109,26 @@ class BybitExchange:
             mark_price=_as_float(row.get("markPrice")),
             liquidation_price=None if liquidation in {None, ""} else float(liquidation),
             unrealized_pnl=_as_float(row.get("unrealisedPnl")),
+        )
+
+    def get_account_snapshot(self) -> AccountSnapshot:
+        response = self._require_ok(
+            self.session.get_wallet_balance(accountType="UNIFIED")
+        )
+        rows = response.get("result", {}).get("list", [])
+        if not rows:
+            raise BybitApiError("Bybit wallet balance response did not contain an account row")
+        row = rows[0]
+        return AccountSnapshot(
+            total_equity_usd=_as_float(row.get("totalEquity")),
+            total_wallet_balance_usd=_as_float(row.get("totalWalletBalance")),
+            total_margin_balance_usd=_as_float(row.get("totalMarginBalance")),
+            total_available_balance_usd=_as_float(row.get("totalAvailableBalance")),
+            total_initial_margin_usd=_as_float(row.get("totalInitialMargin")),
+            total_maintenance_margin_usd=_as_float(row.get("totalMaintenanceMargin")),
+            total_perp_upl_usd=_as_float(row.get("totalPerpUPL")),
+            account_im_rate=_as_float(row.get("accountIMRate")),
+            account_mm_rate=_as_float(row.get("accountMMRate")),
         )
 
     def open_long(self, symbol: str, qty: float) -> OrderAck:
