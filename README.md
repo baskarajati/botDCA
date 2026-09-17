@@ -4,7 +4,7 @@ Long-only geometric DCA trading bot for Bybit USDT perpetuals.
 
 ## Status
 
-Foundation + historical replay. Live trading is **disabled by default**. The current branch provides the strategy engine, dry-run executor, API shell, PostgreSQL-ready configuration, Docker setup, tests, and a minute-candle backtester that uses the same `DcaStrategy` class as the runtime.
+Foundation + historical replay + live-execution infrastructure. Live trading is **disabled by default**. The current branch provides the strategy engine, dry-run executor, Bybit V5 execution/stream/reconciliation modules, persistence and recovery infrastructure, API shell, PostgreSQL-ready configuration, Docker setup, tests, and a minute-candle backtester that uses the same `DcaStrategy` class as the runtime.
 
 ## Strategy v1
 
@@ -109,13 +109,13 @@ pytest -q
 - `BOT_LIVE_TRADING=false`
 - No withdrawal or transfer functionality
 - Manual close always pauses the strategy
-- Exchange adapter is dry-run until live execution is explicitly enabled
-- Strategy state is designed so the exchange, not local memory, becomes the ultimate source of truth once the live adapter is added
+- Live Bybit execution is gated behind explicit configuration
+- Strategy state is reconciled against exchange state before recovery actions
 
 ## Planned next milestones
 
 1. Validate minute-level replay against the exported HYPE trader cycles
-2. Harden Bybit V5 execution + private WebSocket reconciliation
-3. PostgreSQL event persistence and restart recovery
-4. Exchange-hosted TP/DCA order management
+2. Harden live order lifecycle, idempotency, and exchange-hosted TP/DCA behavior
+3. Complete persistence/restart recovery integration tests
+4. Add portfolio-level risk limits and capital-reserve controls
 5. Dashboard with portfolio, DCA ladder, manual close, pause, resume, and emergency stop
