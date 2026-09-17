@@ -111,6 +111,35 @@ prices, wallet equity, available balance, funding payments, or cross-margin liqu
 Use `--skip-market-data` for a CSV-only structural profile. Use
 `--refresh-market-data` to replace the exact-window public candle cache.
 
+## Validate strategy behavior
+
+After the evidence baseline is clean, run both anchored-cycle and continuous validation with
+the same `DcaStrategy` used by runtime:
+
+```bash
+botdca-validate-strategy \
+  --csv /path/to/bybit-trader-export.csv \
+  --symbol HYPEUSDT \
+  --timezone Europe/Rome \
+  --path both \
+  --match-window-seconds 300 \
+  --reentry-delay-seconds 48 \
+  --output /private/path/HYPEUSDT.validation.json \
+  > /tmp/HYPEUSDT-validation-stdout.json
+```
+
+Anchored validation starts one simulation at each observed first-entry minute and disables
+automatic re-entry. This isolates DCA depth, weighted-average entry, TP price, and close-time
+behavior. Continuous validation runs autonomously inside each detected regime and tests cycle
+matching plus re-entry timing. Regime boundaries reset replay state rather than silently
+changing parameters inside an open position.
+
+Every run reports the current uniform baseline and an observed-regime scenario. The latter
+changes only leverage and TP to the regime's observed values; it retains the baseline DCA
+ladder. Observed-regime results are in-sample diagnostics, not calibrated holdout evidence.
+Both low-first and high-first candle paths are reported because one-minute OHLC data does not
+identify intrabar ordering or the exact second-level initial fill.
+
 ## Live orchestration
 
 `LiveStrategyService` follows a reconciliation-first workflow:

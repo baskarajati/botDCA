@@ -25,6 +25,7 @@ dev = [
 botdca-backtest = "botdca.backtest_cli:main"
 botdca-compare-export = "botdca.trader_compare_cli:main"
 botdca-profile-export = "botdca.historical_profile_cli:main"
+botdca-validate-strategy = "botdca.historical_validation_cli:main"
 
 [build-system]
 requires = ["setuptools>=80"]

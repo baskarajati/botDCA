@@ -265,17 +265,7 @@ def build_market_alignment(
 
 
 def _detect_regimes(cycles: list[TraderCycle], *, threshold: float) -> list[dict[str, Any]]:
-    runs: list[list[TraderCycle]] = []
-    for cycle in cycles:
-        if not runs:
-            runs.append([cycle])
-            continue
-        current = runs[-1]
-        current_tp = median(_tp_percent(item) for item in current)
-        if cycle.leverage != current[-1].leverage or abs(_tp_percent(cycle) - current_tp) > threshold:
-            runs.append([cycle])
-        else:
-            current.append(cycle)
+    runs = split_regimes(cycles, threshold=threshold)
 
     return [
         {
@@ -289,6 +279,29 @@ def _detect_regimes(cycles: list[TraderCycle], *, threshold: float) -> list[dict
         }
         for index, run in enumerate(runs, start=1)
     ]
+
+
+def split_regimes(
+    cycles: list[TraderCycle],
+    *,
+    threshold: float = 0.04,
+) -> list[list[TraderCycle]]:
+    """Split chronological cycles at leverage or material TP changes."""
+
+    if threshold <= 0:
+        raise ValueError("threshold must be positive")
+    runs: list[list[TraderCycle]] = []
+    for cycle in cycles:
+        if not runs:
+            runs.append([cycle])
+            continue
+        current = runs[-1]
+        current_tp = median(_tp_percent(item) for item in current)
+        if cycle.leverage != current[-1].leverage or abs(_tp_percent(cycle) - current_tp) > threshold:
+            runs.append([cycle])
+        else:
+            current.append(cycle)
+    return runs
 
 
 def _tp_percent(cycle: TraderCycle) -> float:

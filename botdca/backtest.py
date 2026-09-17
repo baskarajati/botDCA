@@ -45,6 +45,9 @@ class CycleReplay:
     net_pnl_usdt: float
     dca_level: int
     margin_deployed_usdt: float
+    average_entry: float | None = None
+    fill_prices: tuple[float, ...] = ()
+    fill_quantities: tuple[float, ...] = ()
 
 
 @dataclass
@@ -78,12 +81,22 @@ class ReplayEngine:
         *,
         intrabar_path: IntrabarPath = IntrabarPath.LOW_FIRST,
         taker_fee_rate: float = 0.00055,
+        reentry_delay_seconds: float = 0.0,
+        auto_reentry: bool = True,
+        maximum_completed_cycles: int | None = None,
     ) -> None:
         if taker_fee_rate < 0:
             raise ValueError("taker_fee_rate cannot be negative")
+        if reentry_delay_seconds < 0:
+            raise ValueError("reentry_delay_seconds cannot be negative")
+        if maximum_completed_cycles is not None and maximum_completed_cycles <= 0:
+            raise ValueError("maximum_completed_cycles must be positive")
         self.config = config
         self.path = intrabar_path
         self.taker_fee_rate = taker_fee_rate
+        self.reentry_delay_ms = int(reentry_delay_seconds * 1000)
+        self.auto_reentry = auto_reentry
+        self.maximum_completed_cycles = maximum_completed_cycles
         self.strategy = DcaStrategy(config)
         self.strategy.resume()
 
@@ -99,6 +112,9 @@ class ReplayEngine:
         self._equity_peak = 0.0
         self._max_drawdown = 0.0
         self._last_price: float | None = None
+        self._next_entry_eligible_ms = 0
+        self._stopped = False
+        self._candles_processed = 0
 
     def run(self, candles: list[Candle]) -> BacktestResult:
         if not candles:
@@ -106,7 +122,10 @@ class ReplayEngine:
         ordered = sorted(candles, key=lambda item: item.start_ms)
 
         for candle in ordered:
+            if self._stopped:
+                break
             self._process_candle(candle)
+            self._candles_processed += 1
 
         last = ordered[-1]
         self._last_price = last.close
@@ -116,7 +135,7 @@ class ReplayEngine:
         return BacktestResult(
             symbol=self.config.symbol,
             intrabar_path=self.path.value,
-            candles=len(ordered),
+            candles=self._candles_processed,
             completed_cycles=len(self._cycles),
             gross_realized_pnl_usdt=self._gross_realized,
             fees_paid_usdt=self._fees_paid + self._current_entry_fees,
@@ -132,6 +151,10 @@ class ReplayEngine:
     def _process_candle(self, candle: Candle) -> None:
         points = candle.points(self.path)
         if self.strategy.current_cycle is None:
+            if not self.auto_reentry and self._cycles:
+                return
+            if candle.start_ms < self._next_entry_eligible_ms:
+                return
             self._open_cycle(points[0], candle.start_ms)
         self._mark_equity(points[0])
 
@@ -144,15 +167,26 @@ class ReplayEngine:
             while True:
                 cycle = self.strategy.current_cycle
                 if cycle is None:
-                    self._open_cycle(current, timestamp_ms)
-                    cycle = self.strategy.current_cycle
+                    break
                 tp = cycle.tp_price if cycle is not None else None
                 if tp is None or tp > end or tp < current:
                     break
                 self._mark_equity(tp)
                 self._close_cycle(tp, timestamp_ms)
-                self._open_cycle(tp, timestamp_ms)
                 current = tp
+                if (
+                    self.maximum_completed_cycles is not None
+                    and len(self._cycles) >= self.maximum_completed_cycles
+                ):
+                    self._stopped = True
+                    break
+                if not self.auto_reentry:
+                    self._stopped = True
+                    break
+                self._next_entry_eligible_ms = timestamp_ms + self.reentry_delay_ms
+                if self.reentry_delay_ms > 0:
+                    break
+                self._open_cycle(tp, timestamp_ms)
         elif end < start:
             while True:
                 trigger = self.strategy.next_dca_trigger_price()
@@ -206,6 +240,9 @@ class ReplayEngine:
             net_pnl_usdt=net,
             dca_level=cycle.dca_level,
             margin_deployed_usdt=self._current_margin,
+            average_entry=cycle.average_entry,
+            fill_prices=tuple(fill.price for fill in cycle.fills),
+            fill_quantities=tuple(fill.qty for fill in cycle.fills),
         )
         self._cycles.append(replay)
         self._gross_realized += gross

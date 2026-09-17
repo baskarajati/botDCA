@@ -52,6 +52,34 @@ def test_intrabar_ordering_changes_result() -> None:
     assert low_first.net_realized_pnl_usdt != high_first.net_realized_pnl_usdt
 
 
+def test_replay_can_stop_after_one_cycle_without_reentry() -> None:
+    candles = [Candle(start_ms=0, open=100, high=103, low=100, close=103)]
+
+    result = ReplayEngine(
+        StrategyConfig(tp_percent=1.0),
+        auto_reentry=False,
+        maximum_completed_cycles=1,
+    ).run(candles)
+
+    assert result.completed_cycles == 1
+    assert result.open_cycle_dca_level is None
+
+
+def test_reentry_delay_waits_for_an_eligible_candle() -> None:
+    candles = [
+        Candle(start_ms=0, open=100, high=101, low=100, close=101),
+        Candle(start_ms=60_000, open=100, high=101, low=100, close=101),
+    ]
+
+    result = ReplayEngine(
+        StrategyConfig(tp_percent=1.0),
+        reentry_delay_seconds=48,
+    ).run(candles)
+
+    assert result.completed_cycles == 2
+    assert [cycle.opened_ms for cycle in result.cycles] == [0, 60_000]
+
+
 def test_bybit_rows_are_parsed_and_sorted() -> None:
     rows = [
         ["60000", "101", "102", "100", "101.5", "1", "1"],
