@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from botdca.exchange import AccountSnapshot
 from botdca.instruments import InstrumentRules
 from botdca.risk import RiskLimits, evaluate_next_dca
 from botdca.strategy import DcaStrategy
@@ -53,6 +54,7 @@ def build_resting_order_plan(
     rules: InstrumentRules,
     *,
     risk_limits: RiskLimits | None = None,
+    account_snapshot: AccountSnapshot | None = None,
 ) -> RestingOrderPlan:
     cycle = strategy.current_cycle
     if cycle is None or cycle.average_entry is None or cycle.tp_price is None:
@@ -70,7 +72,11 @@ def build_resting_order_plan(
         return RestingOrderPlan(take_profit=tp, next_dca=None)
 
     if risk_limits is not None:
-        decision = evaluate_next_dca(strategy, risk_limits)
+        decision = evaluate_next_dca(
+            strategy,
+            risk_limits,
+            account=account_snapshot,
+        )
         if not decision.allowed:
             return RestingOrderPlan(
                 take_profit=tp,
