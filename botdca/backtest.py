@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from itertools import pairwise
 
 from botdca.strategy import DcaStrategy, StrategyConfig
 
@@ -134,7 +135,7 @@ class ReplayEngine:
             self._open_cycle(points[0], candle.start_ms)
         self._mark_equity(points[0])
 
-        for start, end in zip(points, points[1:]):
+        for start, end in pairwise(points):
             self._traverse_segment(start, end, candle.start_ms)
 
     def _traverse_segment(self, start: float, end: float, timestamp_ms: int) -> None:
