@@ -19,16 +19,20 @@ class DcaStrategy:
         self.config = config
         self.state = BotState.PAUSED
         self.current_cycle: TradingCycle | None = None
+        self.reentry_enabled = False
 
     def resume(self) -> None:
-        if self.state in {BotState.PAUSED, BotState.IDLE}:
-            self.state = BotState.IDLE
+        self.reentry_enabled = True
+        self.state = BotState.ACTIVE if self.current_cycle is not None else BotState.IDLE
 
     def pause(self) -> None:
+        # Pausing disables the next cycle. An already-open cycle remains
+        # manageable: TP/DCA calculations continue while state is PAUSED.
+        self.reentry_enabled = False
         self.state = BotState.PAUSED
 
     def begin_cycle(self, fill_price: float) -> TradingCycle:
-        if self.state != BotState.IDLE:
+        if self.state != BotState.IDLE or not self.reentry_enabled:
             raise RuntimeError(f"cannot begin cycle from state={self.state}")
         if fill_price <= 0:
             raise ValueError("fill_price must be positive")
@@ -72,12 +76,15 @@ class DcaStrategy:
             cycle.id = cycle_id
         cycle.fills.append(Fill(price=average_entry, qty=total_qty, kind="restored"))
         self.current_cycle = cycle
-        self.state = BotState.ACTIVE
+        self.state = BotState.ACTIVE if self.reentry_enabled else BotState.PAUSED
         return cycle
+
+    def _cycle_is_manageable(self) -> bool:
+        return self.current_cycle is not None and self.state in {BotState.ACTIVE, BotState.PAUSED}
 
     def next_dca_trigger_price(self) -> float | None:
         cycle = self.current_cycle
-        if self.state != BotState.ACTIVE or cycle is None:
+        if not self._cycle_is_manageable() or cycle is None:
             return None
         level = cycle.dca_level
         if level >= len(self.config.dca_steps):
@@ -90,7 +97,7 @@ class DcaStrategy:
 
     def next_dca_qty(self) -> float | None:
         cycle = self.current_cycle
-        if self.state != BotState.ACTIVE or cycle is None:
+        if not self._cycle_is_manageable() or cycle is None:
             return None
         level = cycle.dca_level
         if level >= len(self.config.dca_steps):
@@ -103,7 +110,7 @@ class DcaStrategy:
     def should_take_profit(self, market_price: float) -> bool:
         cycle = self.current_cycle
         return bool(
-            self.state == BotState.ACTIVE
+            self._cycle_is_manageable()
             and cycle is not None
             and cycle.tp_price is not None
             and market_price >= cycle.tp_price
@@ -115,7 +122,7 @@ class DcaStrategy:
 
     def apply_dca_fill(self, fill_price: float, qty: float | None = None) -> Fill:
         cycle = self.current_cycle
-        if self.state != BotState.ACTIVE or cycle is None:
+        if not self._cycle_is_manageable() or cycle is None:
             raise RuntimeError("no active cycle")
         expected_qty = self.next_dca_qty()
         if expected_qty is None:
@@ -133,5 +140,5 @@ class DcaStrategy:
             raise RuntimeError("no active cycle")
         cycle.realized_pnl_usdt = realized_pnl_usdt
         self.current_cycle = None
-        self.state = BotState.IDLE
+        self.state = BotState.IDLE if self.reentry_enabled else BotState.PAUSED
         return cycle
