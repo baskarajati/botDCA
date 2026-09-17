@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Float, Integer, String, create_engine
+from sqlalchemy import JSON, Boolean, Float, Integer, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -35,6 +35,26 @@ class ExecutionRecord(Base):
     fee: Mapped[float] = mapped_column(Float)
     realized_pnl: Mapped[float] = mapped_column(Float)
     execution_time_ms: Mapped[int] = mapped_column(index=True)
+    recorded_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+class OrderStateRecord(Base):
+    __tablename__ = "order_states"
+
+    order_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    order_link_id: Mapped[str] = mapped_column(String(128), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    side: Mapped[str] = mapped_column(String(16))
+    order_type: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    price: Mapped[float] = mapped_column(Float)
+    qty: Mapped[float] = mapped_column(Float)
+    cumulative_executed_qty: Mapped[float] = mapped_column(Float)
+    average_price: Mapped[float] = mapped_column(Float)
+    reduce_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    reject_reason: Mapped[str] = mapped_column(String(128), default="")
+    cancel_type: Mapped[str] = mapped_column(String(128), default="")
+    updated_time_ms: Mapped[int] = mapped_column(index=True)
     recorded_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
