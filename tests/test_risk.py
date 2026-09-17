@@ -1,8 +1,9 @@
+from decimal import Decimal
+
 from botdca.instruments import InstrumentRules
 from botdca.order_plan import build_resting_order_plan
 from botdca.risk import RiskLimits, committed_margin_usdt, evaluate_next_dca
 from botdca.strategy import DcaStrategy, StrategyConfig
-from decimal import Decimal
 
 
 def _rules() -> InstrumentRules:
