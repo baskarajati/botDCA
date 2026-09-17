@@ -84,7 +84,7 @@ class LiveWorker:
         while not self._stop.is_set():
             try:
                 self.run_once()
-            except Exception as exc:  # final safety boundary for daemon loop
+            except Exception as exc:  # noqa: BLE001 - daemon safety boundary must fail closed
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 self.service.strategy.pause()
                 self.store.record_strategy_event(
