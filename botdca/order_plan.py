@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from botdca.instruments import InstrumentRules
+from botdca.risk import RiskLimits, evaluate_next_dca
 from botdca.strategy import DcaStrategy
 
 
@@ -17,6 +18,7 @@ class LimitOrderTarget:
 class RestingOrderPlan:
     take_profit: LimitOrderTarget
     next_dca: LimitOrderTarget | None
+    dca_blocked_reason: str | None = None
 
 
 def _validate_notional(rules: InstrumentRules, target: LimitOrderTarget) -> None:
@@ -49,6 +51,8 @@ def initial_market_qty(
 def build_resting_order_plan(
     strategy: DcaStrategy,
     rules: InstrumentRules,
+    *,
+    risk_limits: RiskLimits | None = None,
 ) -> RestingOrderPlan:
     cycle = strategy.current_cycle
     if cycle is None or cycle.average_entry is None or cycle.tp_price is None:
@@ -64,6 +68,15 @@ def build_resting_order_plan(
     dca_qty = strategy.next_dca_qty()
     if dca_price is None or dca_qty is None:
         return RestingOrderPlan(take_profit=tp, next_dca=None)
+
+    if risk_limits is not None:
+        decision = evaluate_next_dca(strategy, risk_limits)
+        if not decision.allowed:
+            return RestingOrderPlan(
+                take_profit=tp,
+                next_dca=None,
+                dca_blocked_reason=decision.reason,
+            )
 
     dca = LimitOrderTarget(
         qty=rules.floor_qty(dca_qty),
