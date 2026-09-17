@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from botdca.backtest import Candle
 from pybit.unified_trading import HTTP
+
+from botdca.backtest import Candle
 
 
 _NUMERIC_INTERVALS = {"1", "3", "5", "15", "30", "60", "120", "240", "360", "720"}
