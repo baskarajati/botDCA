@@ -48,6 +48,8 @@ class TradingCycle:
     id: str = field(default_factory=lambda: str(uuid4()))
     fills: list[Fill] = field(default_factory=list)
     realized_pnl_usdt: float = 0.0
+    dca_level_override: int | None = None
+    last_order_qty_override: float | None = None
 
     @property
     def total_qty(self) -> float:
@@ -62,7 +64,17 @@ class TradingCycle:
 
     @property
     def dca_level(self) -> int:
+        if self.dca_level_override is not None:
+            return self.dca_level_override
         return max(0, len(self.fills) - 1)
+
+    @property
+    def last_order_qty(self) -> float | None:
+        if self.last_order_qty_override is not None:
+            return self.last_order_qty_override
+        if not self.fills:
+            return None
+        return self.fills[-1].qty
 
     @property
     def tp_price(self) -> float | None:
