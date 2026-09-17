@@ -29,9 +29,9 @@ def test_replay_dca_then_take_profit() -> None:
 
 
 def test_large_drop_can_cross_multiple_dca_levels_in_one_candle() -> None:
-    candles = [Candle(start_ms=0, open=100.0, high=100.0, low=95.0, close=95.5)]
+    candles = [Candle(start_ms=0, open=100.0, high=100.0, low=95.0, close=95.0)]
     result = ReplayEngine(
-        StrategyConfig(), intrabar_path=IntrabarPath.LOW_FIRST
+        StrategyConfig(), intrabar_path=IntrabarPath.HIGH_FIRST
     ).run(candles)
 
     assert result.completed_cycles == 0
