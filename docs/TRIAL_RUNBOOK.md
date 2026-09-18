@@ -131,9 +131,21 @@ limits, never loosen them:
 | `BOT_TRIAL_MAX_ACTIVE_SYMBOLS` | refuses to save more enabled slots than this |
 | `BOT_TRIAL_MAX_DCA_LEVEL` | reduces the live ladder depth |
 | `BOT_TRIAL_MAX_PORTFOLIO_MARGIN_USDT` | tightens the portfolio margin cap |
-| `BOT_TRIAL_MANUAL_RESUME_AFTER_RESTART` | requires an explicit resume after restart |
+| `BOT_TRIAL_MANUAL_RESUME_AFTER_RESTART` | refuses any resume that is not the operator's |
 
 The numbers are operator configuration, not recommendations.
+
+`BOT_TRIAL_MANUAL_RESUME_AFTER_RESTART` is enforced, not advisory. A process
+starts with the requirement outstanding, and `BotRuntime.resume` raises
+`ManualResumeRequiredError` unless the caller identifies itself as the operator.
+The console Resume endpoint is the only operator path, and it clears the
+requirement for the rest of that process. The strategy also starts paused on its
+own, so today the two agree; the guard exists so that a resume added later
+cannot quietly restart a funded bot. Outside trial mode the setting does
+nothing, like every other `BOT_TRIAL_*` limit. `/api/v1/portfolio` reports
+`manual_resume_outstanding`, naming each symbol still waiting for its Resume.
+That is live state, so it stays out of the configuration snapshot, whose
+fingerprint must identify a configuration and nothing else.
 
 ## Activation lifecycle
 

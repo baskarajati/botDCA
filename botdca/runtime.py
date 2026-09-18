@@ -12,6 +12,17 @@ from botdca.strategy import DcaStrategy, StrategyConfig, strategy_config_from_ve
 from botdca.strategy_version import get_strategy_version
 
 
+class ManualResumeRequiredError(RuntimeError):
+    """A resume was attempted that did not come from the operator.
+
+    BOT_TRIAL_MANUAL_RESUME_AFTER_RESTART promises that a restarted trial bot
+    trades again only after a human resumes it. Nothing resumes automatically
+    today, so this guard exists to keep that promise true for code written
+    later: any resume that does not identify itself as an operator action is
+    refused while the requirement stands.
+    """
+
+
 @dataclass
 class RuntimeSnapshot:
     state: BotState
@@ -37,6 +48,10 @@ class RuntimeSnapshot:
     max_dca_reached: bool = False
     sizing_mode: str = str(SizingMode.FIXED_MARGIN_USDT)
     sizing_value: float = 0.0
+    #: True while the bot still waits for the operator Resume that this
+    #: process start requires. False once an operator has resumed, and always
+    #: False when the setting is off.
+    manual_resume_required: bool = False
 
 
 class BotRuntime:
@@ -101,6 +116,8 @@ class BotRuntime:
             max_total_floating_loss_usdt=settings.bot_max_total_floating_loss_usdt,
         )
         self._lock = lock or RLock()
+        # A fresh process has not been resumed by anyone yet.
+        self._manual_resume_required = settings.effective_manual_resume_after_restart
 
     @property
     def lock(self) -> RLock:
@@ -139,10 +156,28 @@ class BotRuntime:
                 max_dca_reached=bool(cycle and cycle.at_max_dca),
                 sizing_mode=str(self.strategy.config.initial_allocation.mode),
                 sizing_value=self.strategy.config.initial_allocation.value,
+                manual_resume_required=self._manual_resume_required,
             )
 
-    def resume(self) -> RuntimeSnapshot:
+    @property
+    def manual_resume_required(self) -> bool:
+        """True while this process still needs an operator Resume before trading."""
         with self._lock:
+            return self._manual_resume_required
+
+    def resume(self, *, operator: bool = False) -> RuntimeSnapshot:
+        """Resume trading. `operator` must be true for a human-initiated resume.
+
+        The default is the refusing one, so a resume added later somewhere else
+        fails loudly instead of silently restarting a funded bot.
+        """
+        with self._lock:
+            if self._manual_resume_required and not operator:
+                raise ManualResumeRequiredError(
+                    f"{self.strategy.config.symbol} requires an operator Resume after a "
+                    "restart because BOT_TRIAL_MANUAL_RESUME_AFTER_RESTART is enabled"
+                )
+            self._manual_resume_required = False
             self.strategy.resume()
             return self.snapshot()
 

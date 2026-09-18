@@ -901,7 +901,7 @@ def resume_configured_bot(symbol: str | None) -> dict:
         raise HTTPException(409, "Resume blocked. Resolve the readiness checks first.")
     selected_runtime = _runtime_for_symbol(symbol)
     _audit_action("OPERATOR_RESUME", required=True, symbol=selected_runtime.strategy.config.symbol)
-    return asdict(selected_runtime.resume())
+    return asdict(selected_runtime.resume(operator=True))
 
 
 @app.post("/api/v1/bot/pause")
@@ -1086,7 +1086,12 @@ def portfolio_status() -> dict:
             "max_active_symbols": settings.effective_max_active_symbols,
             "max_dca_level": settings.effective_max_dca_level,
             "max_portfolio_margin_usdt": settings.effective_max_total_bot_margin_usdt,
-            "manual_resume_after_restart": settings.bot_trial_manual_resume_after_restart,
+            "manual_resume_after_restart": settings.effective_manual_resume_after_restart,
+            "manual_resume_outstanding": sorted(
+                symbol
+                for symbol, runtime in _strategy_runtimes().items()
+                if runtime.manual_resume_required
+            ),
             "pause_after_cycle": settings.effective_pause_after_cycle,
         },
         "note": (

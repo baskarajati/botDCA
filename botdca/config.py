@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     bot_trial_max_portfolio_margin_usdt: float = Field(
         default=25.0, gt=0, alias="BOT_TRIAL_MAX_PORTFOLIO_MARGIN_USDT"
     )
+    #: Require an operator Resume after a process start before the bot may
+    #: trade again. BotRuntime.resume refuses any resume that does not come
+    #: from the operator while this is in force.
     bot_trial_manual_resume_after_restart: bool = Field(
         default=True, alias="BOT_TRIAL_MANUAL_RESUME_AFTER_RESTART"
     )
@@ -185,6 +188,11 @@ class Settings(BaseSettings):
     def effective_pause_after_cycle(self) -> bool:
         """Trial mode may stop re-entry after each closed basket; live mode never does."""
         return self.bot_trial_mode and self.bot_trial_pause_after_cycle
+
+    @property
+    def effective_manual_resume_after_restart(self) -> bool:
+        """Trial mode may demand an operator Resume after a restart; live mode never does."""
+        return self.bot_trial_mode and self.bot_trial_manual_resume_after_restart
 
     @property
     def effective_max_active_symbols(self) -> int:

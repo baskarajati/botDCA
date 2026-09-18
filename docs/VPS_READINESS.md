@@ -28,7 +28,10 @@ They were not modified. Their pre-existing state must not be attributed to or
 - secrets: operator token, database password/URL and vault key mounted read-only
 - process: unprivileged UID/GID matched to the `0600` secret owner at build time,
   with UID/GID 10001 as the portable default; read-only root filesystem and dropped capabilities
-- supervision: Compose restart policy plus API and database health checks
+- supervision: Compose restart policy plus API and database health checks.
+  The restart policy brings the container back after a host reboot, so a
+  trial bot with `BOT_TRIAL_MANUAL_RESUME_AFTER_RESTART=true` comes back
+  paused and waits for an operator Resume before it trades again.
 
 The existing Tailscale root route, Crypto Quant port 8790, Sonosole, Nadiatour,
 BusinessApp, PostgreSQL, Redis and existing Docker projects are outside botDCA's

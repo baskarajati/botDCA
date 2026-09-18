@@ -5,12 +5,13 @@ import pytest
 
 from botdca.config import Settings
 from botdca.database import Database, WorkerLease
+from botdca.domain import BotState
 from botdca.instruments import InstrumentRules
 from botdca.live_runtime import (
     LiveWorkerConfigurationError,
     build_live_worker_deployment,
 )
-from botdca.runtime import BotRuntime
+from botdca.runtime import BotRuntime, ManualResumeRequiredError
 
 
 def _settings(**overrides) -> Settings:
@@ -115,3 +116,55 @@ def test_worker_lease_rejects_duplicate_and_can_be_reacquired() -> None:
     first.release()
     assert second.acquire() is True
     second.release()
+
+
+# -- BOT_TRIAL_MANUAL_RESUME_AFTER_RESTART ---------------------------------
+# The setting promises that a restarted trial bot trades again only after a
+# human resumes it. Nothing resumes automatically today, so these tests pin the
+# promise for code written later.
+
+
+def _trial_runtime(**overrides) -> BotRuntime:
+    return BotRuntime(_settings(BOT_TRIAL_MODE=True, **overrides))
+
+
+def test_a_restarted_trial_bot_refuses_a_resume_that_is_not_the_operators() -> None:
+    runtime = _trial_runtime()
+
+    assert runtime.manual_resume_required is True
+
+    with pytest.raises(ManualResumeRequiredError, match="operator Resume"):
+        runtime.resume()
+
+    # The refusal must leave the bot where it was, not half-resumed.
+    assert runtime.strategy.state == BotState.PAUSED
+    assert runtime.strategy.reentry_enabled is False
+    assert runtime.manual_resume_required is True
+
+
+def test_the_operator_resume_satisfies_the_restart_requirement() -> None:
+    runtime = _trial_runtime()
+
+    snapshot = runtime.resume(operator=True)
+
+    assert snapshot.manual_resume_required is False
+    assert snapshot.state == BotState.IDLE
+    assert runtime.manual_resume_required is False
+    # A restart is a once-per-process event, so later resumes are not refused.
+    assert runtime.resume().state == BotState.IDLE
+
+
+def test_a_trial_bot_with_the_setting_off_resumes_without_an_operator() -> None:
+    runtime = _trial_runtime(BOT_TRIAL_MANUAL_RESUME_AFTER_RESTART=False)
+
+    assert runtime.manual_resume_required is False
+    assert runtime.resume().state == BotState.IDLE
+
+
+def test_live_mode_never_demands_a_manual_resume() -> None:
+    # The sibling trial guards only ever tighten trial mode, never live mode.
+    runtime = BotRuntime(_settings(BOT_TRIAL_MANUAL_RESUME_AFTER_RESTART=True))
+
+    assert runtime.settings.bot_trial_mode is False
+    assert runtime.manual_resume_required is False
+    assert runtime.resume().state == BotState.IDLE

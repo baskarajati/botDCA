@@ -126,6 +126,17 @@ def test_csv_truncation_is_explicit(client, monkeypatch):
     assert client.get("/api/v1/journal/executions.csv").headers["X-Export-Truncated"] == "true"
 
 
+def test_the_configuration_fingerprint_ignores_live_runtime_state():
+    """The fingerprint identifies a configuration, so an operator Resume cannot change it."""
+    settings = Settings(_env_file=None, BOT_TRIAL_MODE=True)
+    runtime = BotRuntime(settings)
+    before = configuration_snapshot(settings, runtime)
+
+    runtime.resume(operator=True)
+
+    assert configuration_snapshot(settings, runtime) == before
+
+
 def test_configuration_fingerprint_excludes_credentials():
     settings = Settings(
         _env_file=None, BYBIT_API_KEY="sensitive-key", BYBIT_API_SECRET="sensitive-secret"

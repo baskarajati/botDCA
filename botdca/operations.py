@@ -21,7 +21,7 @@ def configuration_snapshot(settings, runtime, *, credential_vault=None, strategy
             "max_active_symbols": settings.effective_max_active_symbols,
             "max_dca_level": settings.effective_max_dca_level,
             "max_portfolio_margin_usdt": settings.effective_max_total_bot_margin_usdt,
-            "manual_resume_after_restart": settings.bot_trial_manual_resume_after_restart,
+            "manual_resume_after_restart": settings.effective_manual_resume_after_restart,
         },
         "reentry_delay_seconds": settings.bot_reentry_delay_seconds,
         "worker_interval_seconds": settings.bot_worker_interval_seconds,
