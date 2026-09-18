@@ -1,6 +1,9 @@
 # PR #4 design — GreenSynergy strategy family and portfolio safety
 
-Status: experimental. Depends on PR #3 (`codex/pr3-historical-validation`).
+Status: experimental. Built on PR #3, which is merged into `main` (squashed to
+`317ed1c`). Because the repository squash-merges, PR #3's head commit is not an
+ancestor of `main`, so this branch was replanted with
+`git rebase --onto origin/main c6978a3` rather than simply retargeted.
 
 ## Goal
 
