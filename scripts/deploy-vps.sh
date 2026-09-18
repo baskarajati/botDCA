@@ -17,7 +17,7 @@
 #
 # Environment overrides:
 #   BOTDCA_APP_DIR      release root        (default ~/apps/botdca)
-#   BOTDCA_SECRETS_DIR  host secret files   (default /etc/botdca/secrets)
+#   BOTDCA_SECRETS_DIR  host secret files   (default: autodetected, see below)
 #   BOTDCA_REPO_URL     git remote          (default this repository)
 #   BOTDCA_API_ORIGIN   health/API base     (default http://127.0.0.1:8000)
 #   BOTDCA_ALLOW_ARMED  set to 1 to deploy with activation flags already on
@@ -26,7 +26,6 @@ set -euo pipefail
 
 REF="${1:-main}"
 APP_DIR="${BOTDCA_APP_DIR:-$HOME/apps/botdca}"
-SECRETS_DIR="${BOTDCA_SECRETS_DIR:-/etc/botdca/secrets}"
 REPO_URL="${BOTDCA_REPO_URL:-https://github.com/baskarajati/botDCA.git}"
 API_ORIGIN="${BOTDCA_API_ORIGIN:-http://127.0.0.1:8000}"
 
@@ -35,6 +34,19 @@ RELEASES="$APP_DIR/releases"
 CURRENT="$APP_DIR/current"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 NEW="$RELEASES/$STAMP"
+
+# Where the host keeps the Compose secret files. A release-directory deployment
+# keeps them beside the releases in $APP_DIR/shared/secrets; the runbook example
+# uses /etc/botdca/secrets. Autodetect rather than assuming either.
+SECRET_NAMES=(credential_key database_password database_url operator_token)
+if [ -n "${BOTDCA_SECRETS_DIR:-}" ]; then
+  SECRETS_DIR="$BOTDCA_SECRETS_DIR"
+else
+  SECRETS_DIR=/etc/botdca/secrets
+  for candidate in "$APP_DIR/shared/secrets" /etc/botdca/secrets; do
+    if [ -r "$candidate/credential_key" ]; then SECRETS_DIR="$candidate"; break; fi
+  done
+fi
 
 COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.vps.yml)
 ACTIVATION_FLAGS=(BOT_LIVE_TRADING BOT_START_LIVE_WORKER BOT_MAINNET_PREFLIGHT_APPROVED)
@@ -54,9 +66,20 @@ command -v git >/dev/null || fatal "git is not installed"
 command -v docker >/dev/null || fatal "docker is not installed"
 docker compose version >/dev/null 2>&1 || fatal "docker compose v2 is required"
 
-for name in credential_key database_password database_url operator_token; do
-  [ -r "$SECRETS_DIR/$name" ] || fatal "missing or unreadable secret $SECRETS_DIR/$name"
+log "secrets directory: $SECRETS_DIR"
+missing=()
+for name in "${SECRET_NAMES[@]}"; do
+  [ -r "$SECRETS_DIR/$name" ] || missing+=("$name")
 done
+if [ "${#missing[@]}" -gt 0 ]; then
+  {
+    echo "FATAL: $SECRETS_DIR is missing or cannot read: ${missing[*]}"
+    echo "       Set BOTDCA_SECRETS_DIR to the directory holding the Compose secret files."
+    echo "       To find it on a running deployment, inspect the api container's"
+    echo "       mount sources: docker inspect \$(docker ps -qf name=api)"
+  } >&2
+  exit 1
+fi
 
 # -- fetch the exact commit ------------------------------------------------
 
@@ -133,12 +156,10 @@ export BOTDCA_OPERATOR_TOKEN_FILE="$SECRETS_DIR/operator_token"
 export BOTDCA_UID="${BOTDCA_UID:-$(id -u)}"
 export BOTDCA_GID="${BOTDCA_GID:-$(id -g)}"
 
+PREVIOUS="$(readlink -f "$CURRENT" 2>/dev/null || true)"
+
 "${COMPOSE[@]}" config -q
 "${COMPOSE[@]}" up -d --build
-
-# Only publish the release once its containers are up.
-PREVIOUS="$(readlink -f "$CURRENT" 2>/dev/null || true)"
-ln -sfn "$NEW" "$CURRENT"
 
 # -- verify ----------------------------------------------------------------
 # The additive schema migration runs automatically during startup.
@@ -150,12 +171,18 @@ for _ in $(seq 1 45); do
   sleep 2
 done
 if [ "$healthy" -ne 1 ]; then
-  echo "FATAL: the API did not become healthy." >&2
+  echo "FATAL: the API did not become healthy; $CURRENT was NOT moved." >&2
   "${COMPOSE[@]}" ps >&2 || true
   "${COMPOSE[@]}" logs --tail 60 api >&2 || true
-  [ -n "$PREVIOUS" ] && echo "Roll back with: ln -sfn $PREVIOUS $CURRENT" >&2
+  if [ -n "$PREVIOUS" ]; then
+    echo "       current still points at $PREVIOUS" >&2
+    echo "       Restore it with: cd $PREVIOUS && ${COMPOSE[*]} up -d --build" >&2
+  fi
   exit 1
 fi
+
+# Publish the release only now that the API answers.
+ln -sfn "$NEW" "$CURRENT"
 
 token="$(cat "$SECRETS_DIR/operator_token")"
 api() { curl -fsS -H "X-Operator-Token: $token" "$API_ORIGIN$1"; }
