@@ -385,19 +385,24 @@ class BybitExchange:
     def close_long(self, symbol: str, qty: float, *, order_link_id: str | None = None) -> OrderAck:
         self._require_live()
         order_link_id = order_link_id or new_order_link_id("close")
-        return self._place_idempotent(
-            symbol=symbol,
-            order_link_id=order_link_id,
-            request={
-                "category": "linear",
-                "symbol": symbol.upper(),
-                "side": "Sell",
-                "orderType": "Market",
-                "qty": _as_order_number(qty),
-                "positionIdx": 0,
-                "reduceOnly": True,
-            },
-        )
+        try:
+            return self._place_idempotent(
+                symbol=symbol,
+                order_link_id=order_link_id,
+                request={
+                    "category": "linear",
+                    "symbol": symbol.upper(),
+                    "side": "Sell",
+                    "orderType": "Market",
+                    "qty": _as_order_number(qty),
+                    "positionIdx": 0,
+                    "reduceOnly": True,
+                },
+            )
+        except (InvalidRequestError, BybitApiError) as exc:
+            if _is_position_zero_rejection(exc):
+                raise PositionAlreadyClosedError(str(exc)) from exc
+            raise
 
     def cancel_all(self, symbol: str) -> None:
         self._require_live()

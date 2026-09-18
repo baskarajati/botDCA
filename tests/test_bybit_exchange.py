@@ -316,3 +316,10 @@ def test_another_rejection_keeps_its_own_type() -> None:
 
     with pytest.raises(BybitApiError):
         exchange.place_tp_limit("HYPEUSDT", 0.06, 92.19, order_link_id="botdca-tp-poor")
+
+
+def test_a_market_close_refused_for_a_flat_position_is_its_own_error() -> None:
+    exchange = BybitExchange(session=PositionZeroSession(), live_trading=True)
+
+    with pytest.raises(PositionAlreadyClosedError):
+        exchange.close_long("HYPEUSDT", 0.06, order_link_id="botdca-close-race")

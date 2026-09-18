@@ -448,7 +448,7 @@ def test_first_take_profit_after_an_entry_is_routine_not_lost_protection() -> No
     assert store.open_alert_conditions(["HYPEUSDT"]) == []
 
 
-def test_missing_take_profit_after_the_grace_window_is_still_critical() -> None:
+def test_a_take_profit_rebuilt_after_the_grace_window_warns_instead_of_paging() -> None:
     strategy = DcaStrategy(StrategyConfig())
     strategy.resume()
     store = _store()
@@ -463,11 +463,36 @@ def test_missing_take_profit_after_the_grace_window_is_still_critical() -> None:
 
     service.sync()
 
-    assert ("missing_take_profit", "critical") in _alert_conditions(store)
+    # The repair worked, so the basket is protected again. A human reads the
+    # warning in the morning; nobody is paged at night for a take profit that
+    # the exchange cancelled while it closed the position.
     assert ("protection_repaired", "warning") in _alert_conditions(store)
+    assert ("missing_take_profit", "critical") not in _alert_conditions(store)
+    assert store.open_alert_conditions(["HYPEUSDT"]) == []
 
 
-def test_missing_take_profit_after_a_restart_is_critical_then_resolves() -> None:
+def test_a_take_profit_that_cannot_be_rebuilt_is_still_critical() -> None:
+    class BrokenRepair(FakeExchange):
+        def place_tp_limit(self, symbol, qty, price, *, order_link_id=None):
+            raise RuntimeError("bybit rejected the replacement take profit")
+
+    strategy = DcaStrategy(StrategyConfig())
+    strategy.resume()
+    store = _store()
+    _record_entry_fill(store)
+    service = _journaled_service(
+        strategy, BrokenRepair(_long(), _account()), store, _Clock()
+    )
+
+    with pytest.raises(RuntimeError):
+        service.sync()
+
+    # The basket is open and holds no take profit. This is the real loss.
+    assert ("missing_take_profit", "critical") in _alert_conditions(store)
+    assert store.open_alert_conditions(["HYPEUSDT"]) == ["missing_take_profit"]
+
+
+def test_a_take_profit_rebuilt_after_a_restart_leaves_no_open_alert() -> None:
     strategy = DcaStrategy(StrategyConfig())
     strategy.resume()
     store = _store()
@@ -477,12 +502,13 @@ def test_missing_take_profit_after_a_restart_is_critical_then_resolves() -> None
     service = _journaled_service(strategy, exchange, store, _Clock())
 
     service.sync()
-    assert store.open_alert_conditions(["HYPEUSDT"]) == ["missing_take_profit"]
+    assert store.open_alert_conditions(["HYPEUSDT"]) == []
+    assert ("protection_repaired", "warning") in _alert_conditions(store)
 
     service.sync()  # the TP placed by the repair is now resting and matched
 
     assert store.open_alert_conditions(["HYPEUSDT"]) == []
-    assert ("missing_take_profit", "critical") in _alert_conditions(store)
+    assert ("missing_take_profit", "critical") not in _alert_conditions(store)
 
 
 def test_resizing_a_stale_take_profit_is_not_reported_as_lost_protection() -> None:
