@@ -393,6 +393,11 @@ def _worker_status(symbol: str | None = None):
         15000, settings.bot_worker_interval_seconds * 3000
     )
     result = getattr(worker, "last_result", None)
+    configured_version = None
+    try:
+        configured_version = _runtime_for_symbol(symbol).strategy.config.strategy_version_id
+    except Exception:  # noqa: BLE001 - status must render without a configured runtime
+        configured_version = None
     return {
         "running": bool(worker is not None and worker.running),
         "stream_connected": bool(getattr(getattr(worker, "stream", None), "connected", False)),
@@ -405,7 +410,9 @@ def _worker_status(symbol: str | None = None):
             getattr(result, "manual_intervention_required", False)
         ),
         "protection_status": getattr(result, "protection_status", None),
-        "strategy_version_id": getattr(result, "strategy_version_id", None),
+        # Before the first sync there is no result yet; report the configured
+        # version rather than None.
+        "strategy_version_id": getattr(result, "strategy_version_id", None) or configured_version,
     }
 
 
@@ -956,6 +963,7 @@ def _symbol_forecasts(reference_prices: dict[str, float] | None = None) -> dict:
             version=version,
             allocation=slot.allocation,
             reference_price=prices.get(slot.symbol, 100.0),
+            live_dca_cap=settings.effective_max_dca_level,
         )
     return forecasts
 

@@ -319,7 +319,9 @@ class EventStore:
         last_order_qty = sum(row.qty for row in orders[order_sequence[-1]])
         order_count = len(order_sequence)
         execution_identity = "|".join(row.execution_id for row in open_rows)
-        cycle_id = f"recovered-{sha256(execution_identity.encode()).hexdigest()[:20]}"
+        # Every open basket is rebuilt from journaled executions, fresh or not,
+        # so the id names the basket rather than claiming a recovery happened.
+        cycle_id = f"basket-{sha256(execution_identity.encode()).hexdigest()[:20]}"
         return OpenCycleExecutionSummary(
             cycle_id=cycle_id,
             order_count=order_count,

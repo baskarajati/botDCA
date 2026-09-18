@@ -75,3 +75,26 @@ def test_strategy_event_is_recorded() -> None:
     )
 
     assert record_id == 1
+
+
+def test_an_open_basket_id_names_the_basket_not_a_recovery() -> None:
+    store = make_store()
+    store.record_execution(
+        ExecutionEvent(
+            symbol="HYPEUSDT",
+            order_id="order-1",
+            order_link_id="botdca-open-1",
+            execution_id="exec-1",
+            side="Buy",
+            price=91.19,
+            qty=0.06,
+            fee=0.003,
+            realized_pnl=0.0,
+            execution_time_ms=1_789_746_477_792,
+        )
+    )
+
+    summary = store.open_cycle_execution_summary("HYPEUSDT")
+
+    assert summary is not None
+    assert summary.cycle_id.startswith("basket-")

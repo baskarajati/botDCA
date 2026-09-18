@@ -136,3 +136,35 @@ def test_research_expansion_quantifies_the_deeper_ladder_without_enabling_it() -
 def test_worst_case_is_empty_when_no_coin_is_enabled() -> None:
     assert worst_case_scenario({}, max_live_dca_level=8) is None
     assert portfolio_scenarios({}, max_live_dca_level=8) == []
+
+
+def test_a_trial_cap_lowers_live_depth_without_calling_levels_research() -> None:
+    forecast = forecast_symbol(
+        symbol="HYPEUSDT",
+        version=GS,
+        allocation=InitialAllocation(SizingMode.FIXED_MARGIN_USDT, 0.25),
+        reference_price=91.5,
+        live_dca_cap=0,
+    )
+
+    assert forecast.max_live_dca_level == 0
+    assert forecast.row_at(0).live is True
+    assert forecast.row_at(1).live is False
+    assert forecast.row_at(1).research_only is False  # DCA1 is live ladder, only capped
+    assert forecast.row_at(9).research_only is True
+    assert forecast.describe()["rows"][1]["live"] is False
+
+
+def test_scenarios_separate_research_levels_from_levels_beyond_the_live_cap() -> None:
+    from botdca.forecast import build_scenario
+
+    forecasts = {"HYPEUSDT": _forecast()}
+
+    capped = build_scenario("DCA4", forecasts, {"HYPEUSDT": 4}, max_live_dca_level=0)
+    research = build_scenario("DCA9", forecasts, {"HYPEUSDT": 9}, max_live_dca_level=8)
+
+    assert capped.contains_research_levels is False
+    assert capped.exceeds_live_cap is True
+    assert capped.describe()["exceeds_live_cap"] is True
+    assert research.contains_research_levels is True
+    assert research.exceeds_live_cap is True

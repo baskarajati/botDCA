@@ -128,15 +128,19 @@ def parse_order_message(
         item_symbol = str(item.get("symbol", "")).upper()
         if wanted and item_symbol != wanted:
             continue
+        order_type = str(item.get("orderType", ""))
+        # For a Market order Bybit's "price" is its slippage-protection cap, not
+        # a price anyone chose or paid; store the average fill price instead.
+        price_field = "avgPrice" if order_type == "Market" else "price"
         events.append(
             OrderEvent(
                 symbol=item_symbol,
                 order_id=str(item.get("orderId", "")),
                 order_link_id=str(item.get("orderLinkId", "")),
                 side=str(item.get("side", "")),
-                order_type=str(item.get("orderType", "")),
+                order_type=order_type,
                 status=str(item.get("orderStatus", "")),
-                price=_float(item.get("price")),
+                price=_float(item.get(price_field)),
                 qty=_float(item.get("qty")),
                 cumulative_executed_qty=_float(item.get("cumExecQty")),
                 average_price=_float(item.get("avgPrice")),
