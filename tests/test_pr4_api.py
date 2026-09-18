@@ -340,3 +340,112 @@ def test_operations_payload_contains_every_field_the_console_reads(client):
     assert version["experimental"] is True
     assert version["max_live_dca_level"] == 8
     assert len(version["research_dca_triggers"]) == 5
+
+
+def test_every_symbol_worker_shares_one_portfolio_coordinator(monkeypatch, tmp_path):
+    """A coordinator per symbol would only ever see its own exposure."""
+    from decimal import Decimal
+
+    from botdca import live_runtime
+    from botdca.exchange import AccountSnapshot, OrderAck, PositionSnapshot
+
+    class FakeExchange:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        def get_position(self, symbol):
+            return PositionSnapshot(symbol, "", 0.0, 0.0, 0.0, 80.0, None, 0.0)
+
+        def get_account_snapshot(self):
+            return AccountSnapshot(500.0, 500.0, 500.0, 400.0, 100.0, 1.0, 0.0, 0.2, 0.01)
+
+        def get_last_price(self, symbol):
+            return 80.0
+
+        def get_open_orders(self, symbol):
+            return []
+
+        def set_leverage(self, symbol, leverage):
+            return None
+
+        def open_long(self, symbol, qty, *, order_link_id=None):
+            return OrderAck("x", order_link_id or "botdca-open-x")
+
+    class FakeStream:
+        def __init__(self, **kwargs) -> None:
+            self.connected = False
+
+        def start(self):
+            self.connected = True
+
+        def stop(self):
+            self.connected = False
+
+    class FakeInstruments:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def get_linear_rules(self, symbol):
+            from botdca.instruments import InstrumentRules
+
+            return InstrumentRules(
+                symbol, Decimal("0.01"), Decimal("0.001"),
+                Decimal("0.001"), Decimal(1), Decimal(1000),
+            )
+
+    from botdca.config import Settings
+    from botdca.database import Database
+
+    settings = Settings(
+        _env_file=None,
+        BOT_LIVE_TRADING=True,
+        BOT_START_LIVE_WORKER=True,
+        BOT_OPERATOR_TOKEN=TOKEN,
+        BOT_TRIAL_EQUITY_USDT=100,
+        BYBIT_API_KEY="k",
+        BYBIT_API_SECRET="s",
+        BYBIT_TESTNET=True,
+        DATABASE_URL="postgresql+psycopg://unused",
+    )
+    monkeypatch.setattr(api, "settings", settings)
+    monkeypatch.setattr(live_runtime, "live_configuration_errors", lambda _s: [])
+
+    def database_factory(_url):
+        return Database(f"sqlite+pysqlite:///{tmp_path}/shared.db")
+
+    runtimes = {
+        symbol: BotRuntime(settings, symbol=symbol, base_margin_usdt=1.0, lock=api.RLock())
+        for symbol in ("HYPEUSDT", "ONDOUSDT")
+    }
+    # All symbols must share the lock that the coordinator authorizes inside.
+    shared_lock = next(iter(runtimes.values())).lock
+    for configured in runtimes.values():
+        configured._lock = shared_lock
+
+    coordinator = None
+    dispatcher = None
+    services = []
+    for configured in runtimes.values():
+        deployment = live_runtime.build_live_worker_deployment(
+            settings,
+            configured,
+            database_factory=database_factory,
+            exchange_factory=lambda **kw: FakeExchange(**kw),
+            instrument_client_factory=lambda **kw: FakeInstruments(**kw),
+            stream_factory=lambda **kw: FakeStream(**kw),
+            coordinator=coordinator,
+            alerts=dispatcher,
+        )
+        service = deployment.worker.service
+        services.append(service)
+        coordinator = coordinator or service.coordinator
+        dispatcher = dispatcher or service.alerts
+
+    # One coordinator object, and it sees every symbol's exposure.
+    assert services[0].coordinator is services[1].coordinator
+    assert services[0].alerts is services[1].alerts
+    snapshot = coordinator.snapshot()
+    assert {exposure.symbol for exposure in snapshot.exposures} == {
+        "HYPEUSDT",
+        "ONDOUSDT",
+    }

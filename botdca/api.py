@@ -111,6 +111,8 @@ async def lifespan(app: FastAPI):
     deployments: list[LiveWorkerDeployment] = []
     app.state.live_worker = None
     app.state.live_workers = {}
+    app.state.portfolio_coordinator = None
+    app.state.alert_dispatcher = None
     app.state.event_store = None
     app.state.journal_database = None
     app.state.strategy_slot_store = None
@@ -144,16 +146,46 @@ async def lifespan(app: FastAPI):
         if errors:
             raise RuntimeError("Live configuration blocked: " + " ".join(errors))
     if settings.bot_start_live_worker:
+        # A configuration must be explicitly approved for this exchange
+        # environment before any worker starts. Saving a strategy is never
+        # enough, and mainnet needs the operator preflight as well.
+        gate = ActivationGate(
+            status=min(
+                (slot.activation_status for slot in enabled_strategy_slots(slots)),
+                key=activation_rank,
+                default=ActivationStatus.DRAFT,
+            ),
+            testnet=settings.bybit_testnet,
+            mainnet_preflight_approved=settings.bot_mainnet_preflight_approved,
+        )
+        if not gate.allowed:
+            raise RuntimeError("Live worker startup blocked: " + " ".join(gate.errors()))
         try:
-            for symbol, configured_runtime in app.state.strategy_runtimes.items():
-                deployment = build_live_worker_deployment(settings, configured_runtime)
+            # ONE coordinator and ONE alert dispatcher for the whole process.
+            # A coordinator per symbol would only ever see its own exposure, so
+            # the portfolio guards would never bound the portfolio.
+            runtimes = app.state.strategy_runtimes
+            coordinator = None
+            dispatcher = None
+            for symbol, configured_runtime in runtimes.items():
+                deployment = build_live_worker_deployment(
+                    settings,
+                    configured_runtime,
+                    coordinator=coordinator,
+                    alerts=dispatcher,
+                )
+                service = getattr(deployment.worker, "service", None)
+                coordinator = coordinator or getattr(service, "coordinator", None)
+                dispatcher = dispatcher or getattr(service, "alerts", None)
                 deployment.start()
                 deployments.append(deployment)
                 app.state.live_workers[symbol] = deployment.worker
+            app.state.portfolio_coordinator = coordinator
+            app.state.alert_dispatcher = dispatcher
             app.state.live_worker = next(iter(app.state.live_workers.values()), None)
             if app.state.live_worker is not None:
-                service = getattr(app.state.live_worker, "service", None)
-                app.state.event_store = getattr(service, "store", app.state.event_store)
+                primary = getattr(app.state.live_worker, "service", None)
+                app.state.event_store = getattr(primary, "store", app.state.event_store)
         except Exception:
             for deployment in reversed(deployments):
                 deployment.stop()
@@ -165,6 +197,8 @@ async def lifespan(app: FastAPI):
             deployment.stop()
         app.state.live_worker = None
         app.state.live_workers = {}
+        app.state.portfolio_coordinator = None
+        app.state.alert_dispatcher = None
         database = getattr(app.state, "journal_database", None)
         if database is not None:
             database.engine.dispose()
