@@ -17,6 +17,7 @@
 #
 # Environment overrides:
 #   BOTDCA_APP_DIR      release root        (default ~/apps/botdca)
+#   BOTDCA_COMPOSE_PROJECT  Compose project name (default botdca)
 #   BOTDCA_SECRETS_DIR  host secret files   (default: autodetected, see below)
 #   BOTDCA_REPO_URL     git remote          (default this repository)
 #   BOTDCA_API_ORIGIN   health/API base     (default http://127.0.0.1:8000)
@@ -48,7 +49,13 @@ else
   done
 fi
 
-COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.vps.yml)
+# Compose derives its project name from the working directory unless told
+# otherwise. Releases live in timestamped directories, so without an explicit
+# project name every deploy would create a SEPARATE stack with its own empty
+# volumes rather than updating the existing one - losing the database and the
+# encrypted credential vault. Pin it.
+COMPOSE_PROJECT="${BOTDCA_COMPOSE_PROJECT:-botdca}"
+COMPOSE=(docker compose -p "$COMPOSE_PROJECT" -f docker-compose.yml -f docker-compose.vps.yml)
 ACTIVATION_FLAGS=(BOT_LIVE_TRADING BOT_START_LIVE_WORKER BOT_MAINNET_PREFLIGHT_APPROVED)
 
 log() { printf '    %s\n' "$*"; }
@@ -66,7 +73,15 @@ command -v git >/dev/null || fatal "git is not installed"
 command -v docker >/dev/null || fatal "docker is not installed"
 docker compose version >/dev/null 2>&1 || fatal "docker compose v2 is required"
 
-log "secrets directory: $SECRETS_DIR"
+log "compose project:    $COMPOSE_PROJECT"
+log "secrets directory:  $SECRETS_DIR"
+if ! docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+     2>/dev/null | grep -q .; then
+  log "NOTE: no existing '$COMPOSE_PROJECT' containers were found."
+  log "      This will create a NEW stack with empty volumes. If you meant to"
+  log "      update an existing deployment, stop and set BOTDCA_COMPOSE_PROJECT"
+  log "      to its project name (docker compose ls)."
+fi
 missing=()
 for name in "${SECRET_NAMES[@]}"; do
   [ -r "$SECRETS_DIR/$name" ] || missing+=("$name")
