@@ -558,6 +558,122 @@ function renderJournal(journal) {
   });
 }
 
+
+function renderPortfolio(status) {
+  const portfolio = status.portfolio;
+  const guards = status.portfolio_guards;
+  if (!portfolio || !guards) {
+    setStatus("portfolio-state", "Unavailable", "caution");
+    return;
+  }
+  const margin = portfolio.total_bot_margin_usdt || 0;
+  const cap = guards.max_total_bot_margin_usdt || 0;
+  const used = cap > 0 ? margin / cap : 0;
+  setText("portfolio-margin", formatMoney(margin));
+  setText("portfolio-margin-cap", formatMoney(cap));
+  setText("portfolio-notional", formatMoney(portfolio.total_bot_notional_usdt));
+  setText(
+    "portfolio-deep",
+    `${portfolio.deep_basket_count} of ${guards.max_simultaneous_deep_baskets} at DCA${guards.deep_dca_level}+`,
+  );
+  setText("portfolio-upl", formatMoney(portfolio.total_unrealized_pnl_usdt));
+  setText(
+    "portfolio-available",
+    portfolio.available_balance_usdt === null
+      ? "Account unavailable"
+      : `${formatMoney(portfolio.available_balance_usdt)} (${formatPercent(
+          (portfolio.available_equity_ratio || 0) * 100,
+        )})`,
+  );
+  setStatus(
+    "portfolio-state",
+    `${formatPercent(used * 100)} of budget committed`,
+    used >= 1 ? "failure" : used >= 0.6 ? "caution" : "",
+  );
+
+  const workers = status.workers || {};
+  const intervention = Object.entries(workers)
+    .filter(([, worker]) => worker.manual_intervention_required)
+    .map(([symbol, worker]) => `${symbol} (${worker.last_sync_status})`);
+  const banner = $("portfolio-intervention");
+  banner.hidden = intervention.length === 0;
+  banner.textContent = intervention.length
+    ? `Manual intervention required: ${intervention.join(", ")}. Take profit and reduce-only close remain available.`
+    : "";
+}
+
+function renderStrategyVersion(status) {
+  const bot = status.bot;
+  const versions = status.strategy_versions || {};
+  const version =
+    versions[bot.strategy_version_id] ||
+    versions[status.configuration?.strategy?.strategy_version_id] ||
+    Object.values(versions)[0];
+  if (!version) return;
+
+  setText("strategy-version-id", version.version_id);
+  setText(
+    "strategy-direction",
+    `${version.direction} · ${version.margin_mode} ${version.leverage}x`,
+  );
+  setText("strategy-tp", `+${formatPercent(version.take_profit_percent)}`);
+  setText("strategy-multiplier", `x${formatNumber(version.dca_size_multiplier, 2)}`);
+  setText(
+    "strategy-live-ladder",
+    `DCA1-DCA${version.max_live_dca_level} (${version.live_dca_triggers
+      .map((trigger) => `${trigger}%`)
+      .join(", ")})`,
+  );
+  setText("strategy-version-status", version.experimental ? "EXPERIMENTAL" : version.status);
+  setText("strategy-version-summary", version.summary || "");
+  setText(
+    "strategy-activation",
+    status.activation ? status.activation.status : "unknown",
+  );
+  setText(
+    "strategy-research-note",
+    version.research_dca_triggers.length
+      ? `Research-only levels DCA${version.max_live_dca_level + 1}-DCA${version.max_research_dca_level} (${version.research_dca_triggers
+          .map((trigger) => `${trigger}%`)
+          .join(", ")}) are never traded live. They exist for forecasting and stress testing only.`
+      : "",
+  );
+}
+
+function renderAlerts(status) {
+  const body = $("alerts-rows");
+  if (!body) return;
+  const alerts = status.journal?.alerts || [];
+  body.replaceChildren();
+  if (!alerts.length) {
+    body.append(emptyRow("No alerts recorded."));
+    setStatus("alerts-state", "No alerts", "");
+    return;
+  }
+  alerts.forEach((alert) => {
+    const row = document.createElement("tr");
+    [
+      formatTime(alert.occurred_at),
+      alert.severity,
+      alert.symbol,
+      alert.condition,
+      alert.message,
+    ].forEach((value) => {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      row.append(cell);
+    });
+    if (alert.severity === "critical") row.className = "row-danger";
+    body.append(row);
+  });
+  const critical = status.open_critical_alerts || [];
+  setStatus(
+    "alerts-state",
+    critical.length ? `${critical.length} open critical` : `${alerts.length} recorded`,
+    critical.length ? "failure" : "",
+  );
+}
+
 function render(status) {
   snapshot = status;
   lastSuccess = Date.now();
@@ -665,6 +781,9 @@ function render(status) {
   renderConfiguration(configuration);
   renderJournal(status.journal);
   renderAdditionalBaskets(status);
+  renderPortfolio(status);
+  renderStrategyVersion(status);
+  renderAlerts(status);
   showNotice(
     status.mode === "preview"
       ? "Live trading is disabled. Entry controls change local state only; this preview does not simulate fills."
@@ -699,15 +818,19 @@ function renderAdditionalBaskets(status) {
     metrics.className = "mini-basket-metrics";
     [
       ["Position", position?.size ? formatNumber(position.size, 6) : "Flat"],
-      ["DCA depth", `${bot.dca_level} / ${bot.max_dca_level}`],
       [
-        "Initial margin",
-        formatMoney(
-          snapshot.configuration.strategy_slots.find(
-            (slot) => slot.symbol === bot.symbol,
-          )?.base_margin_usdt,
-        ),
+        "DCA depth",
+        bot.max_dca_reached
+          ? `${bot.dca_level} / ${bot.max_dca_level} · MAX REACHED`
+          : `${bot.dca_level} / ${bot.max_dca_level}`,
       ],
+      [
+        "Initial allocation",
+        bot.sizing_mode === "fixed_base_quantity"
+          ? `${formatNumber(bot.sizing_value, 6)} ${bot.symbol.replace("USDT", "")}`
+          : formatMoney(bot.sizing_value),
+      ],
+      ["Protection", worker?.protection_status || "—"],
       ["Worker", worker?.running ? "Running" : "Stopped"],
     ].forEach(([label, value]) => {
       const wrapper = document.createElement("div");

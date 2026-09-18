@@ -1,8 +1,20 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import Field, model_validator
+from pydantic import BeforeValidator, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _blank_is_none(value):
+    """Treat an empty .env value as unset rather than as a parse error."""
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+#: An optional number that may be left blank in a .env file.
+OptionalFloat = Annotated[float | None, BeforeValidator(_blank_is_none)]
 
 
 class Settings(BaseSettings):
@@ -18,7 +30,9 @@ class Settings(BaseSettings):
         default=["localhost", "127.0.0.1", "[::1]"],
         alias="BOT_ALLOWED_HOSTS",
     )
-    bot_trial_equity_usdt: float | None = Field(default=None, gt=0, alias="BOT_TRIAL_EQUITY_USDT")
+    bot_trial_equity_usdt: OptionalFloat = Field(
+        default=None, gt=0, alias="BOT_TRIAL_EQUITY_USDT"
+    )
     bot_mainnet_preflight_approved: bool = Field(
         default=False, alias="BOT_MAINNET_PREFLIGHT_APPROVED"
     )
@@ -70,7 +84,7 @@ class Settings(BaseSettings):
     bot_max_simultaneous_deep_baskets: int = Field(
         default=1, ge=0, le=3, alias="BOT_MAX_SIMULTANEOUS_DEEP_BASKETS"
     )
-    bot_max_total_floating_loss_usdt: float | None = Field(
+    bot_max_total_floating_loss_usdt: OptionalFloat = Field(
         default=None, gt=0, alias="BOT_MAX_TOTAL_FLOATING_LOSS_USDT"
     )
 
@@ -119,6 +133,31 @@ class Settings(BaseSettings):
         default=False,
         alias="BOT_TRUSTED_HTTPS_PROXY",
     )
+
+    @field_validator("bot_alert_min_severity")
+    @classmethod
+    def validate_alert_severity(cls, value: str) -> str:
+        allowed = {"info", "warning", "critical"}
+        normalized = value.strip().lower()
+        if normalized not in allowed:
+            raise ValueError(
+                f"BOT_ALERT_MIN_SEVERITY must be one of {', '.join(sorted(allowed))}"
+            )
+        return normalized
+
+    @field_validator("bot_strategy_version_id")
+    @classmethod
+    def validate_strategy_version(cls, value: str) -> str:
+        # Imported here so config stays importable without the strategy package.
+        from botdca.strategy_version import STRATEGY_VERSIONS
+
+        normalized = value.strip()
+        if normalized not in STRATEGY_VERSIONS:
+            known = ", ".join(sorted(STRATEGY_VERSIONS))
+            raise ValueError(
+                f"BOT_STRATEGY_VERSION_ID {normalized!r} is unknown; known versions: {known}"
+            )
+        return normalized
 
     @property
     def effective_max_dca_level(self) -> int:
