@@ -266,6 +266,38 @@ export BOTDCA_GID=$(id -g)
 docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build
 ```
 
+### Scripted redeploy
+
+`scripts/deploy-vps.sh` performs the release-directory deployment above. It takes
+any git ref and defaults to `main`:
+
+```bash
+scripts/deploy-vps.sh              # deploy main
+scripts/deploy-vps.sh v1.2.3       # or a tag, branch or commit
+```
+
+It resolves the ref to one commit and records it in `.deployed-commit`, extracts
+that commit into a timestamped release directory, carries the existing `.env`
+forward, and appends any setting the release introduced using the documented
+default from `.env.example` without overwriting existing values. It then builds,
+starts, and only repoints `current` once the containers are up, finishing by
+printing health, the strategy version, the portfolio guards, the activation gate
+and the readiness table.
+
+It deploys in PREVIEW and refuses to run while `BOT_LIVE_TRADING`,
+`BOT_START_LIVE_WORKER` or `BOT_MAINNET_PREFLIGHT_APPROVED` is enabled, because
+arming is a separate operator step. Set `BOTDCA_ALLOW_ARMED=1` to override that
+deliberately. It warns when the portfolio margin cap exceeds the trial equity
+reference, since that combination blocks live startup.
+
+It never runs `docker compose down -v`. If the API does not become healthy it
+prints the container status and recent logs and tells you the rollback command
+rather than leaving `current` pointing at a broken release.
+
+Paths are overridable with `BOTDCA_APP_DIR` (default `~/apps/botdca`),
+`BOTDCA_SECRETS_DIR` (default `/etc/botdca/secrets`), `BOTDCA_REPO_URL` and
+`BOTDCA_API_ORIGIN`.
+
 On the audited VPS, port `8000` is currently free but the existing tailnet HTTPS
 root already belongs to another protected service. Do not replace that route.
 After the botDCA containers are healthy, use a separate tailnet-only HTTPS
