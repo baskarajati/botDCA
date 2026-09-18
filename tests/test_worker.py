@@ -156,3 +156,42 @@ def test_a_failed_stream_message_alerts_once_and_recovers_over_rest_at_once() ->
     worker.run_once()  # no new failures: no alert, no extra recovery
     assert len(recoveries) == 2
     assert len(sink.recent()) == 1
+
+
+def test_unchanged_syncs_are_journaled_only_on_change_or_heartbeat(monkeypatch) -> None:
+    from botdca import worker as worker_module
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(worker_module, "monotonic", lambda: clock["now"])
+    service = FakeService()
+    store = FakeStore()
+    stream = FakeStream()
+    stream.start()
+    worker = LiveWorker(
+        service=service,
+        stream=stream,
+        store=store,
+        interval_seconds=2.0,
+        sync_journal_heartbeat_seconds=300.0,
+    )
+
+    def journaled() -> int:
+        return sum(1 for event in store.events if event["event_type"] == "LIVE_SYNC")
+
+    worker.run_once()
+    for _ in range(10):
+        clock["now"] += 2.0
+        worker.run_once()
+    assert journaled() == 1  # ten identical syncs add nothing
+
+    original = service.sync
+    service.sync = lambda: LiveSyncResult(
+        status="entry_submitted", position=original().position
+    )
+    clock["now"] += 2.0
+    worker.run_once()
+    assert journaled() == 2  # a changed meaning is journaled at once
+
+    clock["now"] += 300.0
+    worker.run_once()
+    assert journaled() == 3  # the heartbeat proves the loop is alive

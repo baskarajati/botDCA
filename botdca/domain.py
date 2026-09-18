@@ -99,8 +99,18 @@ class TradingCycle:
         return avg * (1 + self.tp_percent / 100)
 
     @property
+    def has_dca_ladder(self) -> bool:
+        """False for a take-profit-only basket (live depth capped at DCA0)."""
+        return self.max_dca_level is None or self.max_dca_level > 0
+
+    @property
     def at_max_dca(self) -> bool:
-        return self.max_dca_level is not None and self.dca_level >= self.max_dca_level
+        # A basket with no ladder cannot exhaust it; it simply holds for its TP.
+        return (
+            self.max_dca_level is not None
+            and self.has_dca_ladder
+            and self.dca_level >= self.max_dca_level
+        )
 
     @property
     def status(self) -> BasketStatus:

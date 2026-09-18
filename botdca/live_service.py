@@ -512,6 +512,22 @@ class LiveStrategyService:
         # of code. TP stays live, reconciliation continues, manual reduce-only
         # close remains possible, and no DCA9 is ever invented.
         dca_orders = [order for order in open_orders if _is_bot_order(order, "dca")]
+        if plan.max_dca_reached and not cycle.has_dca_ladder:
+            # Live depth is capped at DCA0 (for example a first trial): holding
+            # for the take profit is the configured shape, not an exhausted
+            # ladder, so there is nothing for a human to resolve.
+            for order in dca_orders:
+                self.exchange.cancel_order(self.symbol, order.order_id)
+            return LiveSyncResult(
+                status="take_profit_only",
+                position=position,
+                account=account,
+                take_profit_order=tp,
+                dca_blocked_reason="DCA is disabled: the live maximum is DCA0",
+                protection_status=str(assessment.status),
+                protection_detail=assessment.detail,
+                strategy_version_id=self.strategy_version_id,
+            )
         if plan.max_dca_reached:
             for order in dca_orders:
                 self.exchange.cancel_order(self.symbol, order.order_id)

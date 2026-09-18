@@ -35,9 +35,12 @@ class LiveWorker:
         interval_seconds: float = 2.0,
         execution_recovery: Callable[[], None] | None = None,
         alerts: AlertDispatcher | None = None,
+        sync_journal_heartbeat_seconds: float = 300.0,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive")
+        if sync_journal_heartbeat_seconds <= 0:
+            raise ValueError("sync_journal_heartbeat_seconds must be positive")
         self.alerts = alerts or AlertDispatcher()
         self.service = service
         self.stream = stream
@@ -53,6 +56,11 @@ class LiveWorker:
         self._last_recovery_at: float | None = None
         self._stream_alerted = False
         self._seen_stream_failures = 0
+        # A sync every two seconds would otherwise journal ~43,000 identical
+        # rows a day. Journal a sync when its meaning changes, plus a heartbeat.
+        self.sync_journal_heartbeat_seconds = sync_journal_heartbeat_seconds
+        self._last_journaled_state: tuple | None = None
+        self._last_journaled_at: float | None = None
 
     @property
     def running(self) -> bool:
@@ -104,16 +112,22 @@ class LiveWorker:
         result = self.service.sync()
         self.last_result = result
         self.last_error = None
-        self.store.record_strategy_event(
-            event_type="LIVE_SYNC",
-            symbol=self.service.symbol,
-            cycle_id=(
-                self.service.strategy.current_cycle.id
-                if self.service.strategy.current_cycle is not None
-                else None
-            ),
-            payload=asdict(result),
-        )
+        cycle = self.service.strategy.current_cycle
+        state = _journal_state(result, cycle.id if cycle is not None else None)
+        now = monotonic()
+        if (
+            state != self._last_journaled_state
+            or self._last_journaled_at is None
+            or now - self._last_journaled_at >= self.sync_journal_heartbeat_seconds
+        ):
+            self.store.record_strategy_event(
+                event_type="LIVE_SYNC",
+                symbol=self.service.symbol,
+                cycle_id=cycle.id if cycle is not None else None,
+                payload=asdict(result),
+            )
+            self._last_journaled_state = state
+            self._last_journaled_at = now
         self.last_success_at_ms = int(time() * 1000)
         self.alerts.clear(AlertCondition.WORKER_CRASHED, self.service.symbol)
         return result
@@ -191,3 +205,27 @@ class LiveWorker:
                     payload={"error": self.last_error},
                 )
             self._stop.wait(self.interval_seconds)
+
+
+def _journal_state(result: LiveSyncResult, cycle_id: str | None) -> tuple:
+    """What a sync means, ignoring values that move on every tick (mark, PnL, account)."""
+    position = result.position
+
+    def order_id(ack) -> str | None:
+        return ack.order_id if ack is not None else None
+
+    return (
+        cycle_id,
+        result.status,
+        position.side,
+        position.size,
+        position.average_entry,
+        order_id(result.entry_order),
+        order_id(result.take_profit_order),
+        order_id(result.dca_order),
+        result.dca_blocked_reason,
+        result.max_dca_reached,
+        result.manual_intervention_required,
+        result.protection_status,
+        result.strategy_version_id,
+    )
