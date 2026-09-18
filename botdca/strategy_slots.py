@@ -206,9 +206,10 @@ def serialized_slot(
             version=version,
             allocation=slot.allocation,
             reference_price=reference_price or 100.0,
+            live_dca_cap=max_dca_level,
         )
         result["ladder_forecast"] = ladder.describe()
-        live_level = min(version.max_live_dca_level, len(ladder.rows) - 1)
+        live_level = min(ladder.max_live_dca_level, len(ladder.rows) - 1)
         result["live_ladder_margin_usdt"] = ladder.row_at(live_level).cumulative_margin_usdt
         if slot.sizing_mode is SizingMode.FIXED_BASE_QUANTITY:
             # For fixed quantity the USDT figures depend on price, so the

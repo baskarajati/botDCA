@@ -33,11 +33,14 @@ class LadderRow:
     cumulative_margin_usdt: float
     position_notional_usdt: float
     weighted_average_entry: float
+    #: Reachable by the live runtime under the current cap (trial mode may lower it).
+    live: bool = True
 
     def describe(self) -> dict:
         return {
             "level": self.level,
             "research_only": self.research_only,
+            "live": self.live,
             "trigger_drop_percent": self.trigger_drop_percent,
             "fill_price": self.fill_price,
             "incremental_qty": self.incremental_qty,
@@ -89,14 +92,20 @@ def forecast_symbol(
     allocation: InitialAllocation,
     reference_price: float = 100.0,
     include_research_levels: bool = True,
+    live_dca_cap: int | None = None,
 ) -> SymbolForecast:
     """Walk the ladder from a reference price, reporting all four quantities.
 
     Levels beyond `version.max_live_dca_level` are flagged `research_only` and
-    are never reachable by the live runtime.
+    are never reachable by the live runtime. `live_dca_cap` (for example the
+    trial maximum) can only lower the live depth; rows above it stay in the
+    forecast for comparison but are marked not live.
     """
     if reference_price <= 0:
         raise ValueError("reference_price must be positive")
+    max_live = version.max_live_dca_level
+    if live_dca_cap is not None:
+        max_live = max(0, min(max_live, live_dca_cap))
 
     leverage = version.leverage
     if allocation.mode is SizingMode.FIXED_MARGIN_USDT:
@@ -150,6 +159,7 @@ def forecast_symbol(
                 cumulative_margin_usdt=cumulative_margin,
                 position_notional_usdt=cumulative_notional,
                 weighted_average_entry=cumulative_notional / cumulative_qty,
+                live=index <= max_live,
             )
         )
 
@@ -162,7 +172,7 @@ def forecast_symbol(
         allocation_value=allocation.value,
         initial_qty=initial_qty,
         initial_margin_usdt=initial_margin,
-        max_live_dca_level=version.max_live_dca_level,
+        max_live_dca_level=max_live,
         rows=tuple(rows),
     )
 
@@ -195,12 +205,15 @@ class PortfolioScenario:
     total_margin_usdt: float
     total_notional_usdt: float
     stress: tuple[StressPoint, ...]
+    #: Some level is deeper than the current live cap, so the runtime cannot reach it.
+    exceeds_live_cap: bool = False
 
     def describe(self) -> dict:
         return {
             "name": self.name,
             "levels": dict(self.levels),
             "contains_research_levels": self.contains_research_levels,
+            "exceeds_live_cap": self.exceeds_live_cap,
             "total_qty_by_symbol": dict(self.total_qty_by_symbol),
             "total_margin_usdt": self.total_margin_usdt,
             "total_notional_usdt": self.total_notional_usdt,
@@ -265,7 +278,12 @@ def build_scenario(
     return PortfolioScenario(
         name=name,
         levels=dict(levels),
-        contains_research_levels=any(level > max_live_dca_level for level in levels.values()),
+        # Research levels are the version's DCA9+ ladder, not whatever the
+        # current (possibly trial) cap excludes; that is exceeds_live_cap.
+        contains_research_levels=any(
+            forecasts[symbol].row_at(level).research_only for symbol, level in levels.items()
+        ),
+        exceeds_live_cap=any(level > max_live_dca_level for level in levels.values()),
         total_qty_by_symbol=qty_by_symbol,
         total_margin_usdt=total_margin,
         total_notional_usdt=total_notional,

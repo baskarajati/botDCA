@@ -67,3 +67,28 @@ def test_order_store_ignores_duplicate_and_stale_updates() -> None:
     assert store.record_order(make_event("Filled", 1100, cum_qty=0.4)) is True
     assert store.record_order(make_event("Cancelled", 1050)) is False
     assert store.active_bot_orders("HYPEUSDT") == []
+
+
+def test_a_market_order_stores_its_fill_price_not_the_slippage_cap() -> None:
+    from botdca.bybit_events import parse_order_message
+
+    item = {
+        "category": "linear",
+        "symbol": "HYPEUSDT",
+        "orderId": "o-1",
+        "orderLinkId": "botdca-open-47e123b7cda1823386fd",
+        "side": "Buy",
+        "orderType": "Market",
+        "orderStatus": "Filled",
+        "price": "95.74",
+        "qty": "0.06",
+        "cumExecQty": "0.06",
+        "avgPrice": "91.19",
+        "updatedTime": "1789746477795",
+    }
+    limit = {**item, "orderId": "o-2", "orderType": "Limit", "price": "92.19", "avgPrice": "0"}
+
+    market_event, limit_event = parse_order_message({"data": [item, limit]}, symbol="HYPEUSDT")
+
+    assert market_event.price == 91.19
+    assert limit_event.price == 92.19

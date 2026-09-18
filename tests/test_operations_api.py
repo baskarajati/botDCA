@@ -416,3 +416,10 @@ def test_operator_can_acknowledge_stale_alerts(client):
     assert len(alerts) == 2 and all(row["acknowledged"] for row in alerts)
     events = [row["event_type"] for row in store.recent_events("HYPEUSDT", limit=5)]
     assert "OPERATOR_ALERTS_ACKNOWLEDGED" in events
+
+
+def test_worker_status_reports_the_configured_version_before_the_first_sync(client):
+    worker = client.get("/api/v1/operations").json()["worker"]
+
+    assert worker["last_sync_status"] is None
+    assert worker["strategy_version_id"] == "greensynergy-reconstructed-v1"

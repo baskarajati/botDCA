@@ -53,3 +53,16 @@ def test_margin_forecast_scales_linearly_without_close_rule() -> None:
         one[-1]["cumulative_margin_usdt"] * 3
     )
     assert all("close" not in row for row in one)
+
+
+def test_slot_ladder_forecast_follows_the_trial_depth_cap() -> None:
+    from botdca.strategy_slots import StrategySlot, serialized_slot
+
+    slot = StrategySlot(1, True, "HYPEUSDT", 0.25)
+
+    result = serialized_slot(slot, leverage=24, max_dca_level=0, reference_price=91.5)
+
+    assert result["ladder_forecast"]["max_live_dca_level"] == 0
+    assert result["live_ladder_margin_usdt"] == pytest.approx(
+        result["ladder_forecast"]["rows"][0]["cumulative_margin_usdt"]
+    )
