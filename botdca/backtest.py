@@ -5,7 +5,7 @@ from enum import StrEnum
 from itertools import pairwise
 from typing import Protocol
 
-from botdca.strategy import DcaStrategy, StrategyConfig
+from botdca.strategy import DcaStrategy, DcaTriggerReference, StrategyConfig
 
 
 class IntrabarPath(StrEnum):
@@ -120,6 +120,7 @@ class ReplayEngine:
         auto_reentry: bool = True,
         maximum_completed_cycles: int | None = None,
         funding_model: FundingModel | None = None,
+        trigger_reference: DcaTriggerReference = DcaTriggerReference.WEIGHTED_AVERAGE,
     ) -> None:
         if taker_fee_rate < 0:
             raise ValueError("taker_fee_rate cannot be negative")
@@ -134,7 +135,8 @@ class ReplayEngine:
         self.auto_reentry = auto_reentry
         self.maximum_completed_cycles = maximum_completed_cycles
         self.funding_model = funding_model
-        self.strategy = DcaStrategy(config)
+        self.trigger_reference = trigger_reference
+        self.strategy = DcaStrategy(config, trigger_reference=trigger_reference)
         self.strategy.resume()
 
         self._cycles: list[CycleReplay] = []

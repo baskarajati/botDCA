@@ -5,6 +5,8 @@ __pycache__/
 .venv/
 build/
 .env
+secrets/
+*.enc
 *.pyc
 *.egg-info/
 *.trader-profile.json

@@ -8,7 +8,7 @@ from typing import Any
 
 from botdca.backtest import Candle, CycleReplay, IntrabarPath, ReplayEngine
 from botdca.historical_profile import MINUTE_MS, split_regimes
-from botdca.strategy import StrategyConfig
+from botdca.strategy import DcaTriggerReference, StrategyConfig
 from botdca.trader_export import TraderCycle, TraderExportData
 
 
@@ -20,6 +20,7 @@ def evaluate_anchored_cycles(
     intrabar_path: IntrabarPath,
     maximum_close_time_error_seconds: float = 300.0,
     taker_fee_rate: float = 0.00055,
+    trigger_reference: DcaTriggerReference = DcaTriggerReference.WEIGHTED_AVERAGE,
 ) -> dict[str, Any]:
     """Evaluate one independently anchored replay per observed cycle."""
 
@@ -45,6 +46,7 @@ def evaluate_anchored_cycles(
             taker_fee_rate=taker_fee_rate,
             auto_reentry=False,
             maximum_completed_cycles=1,
+            trigger_reference=trigger_reference,
         ).run(window)
         if not result.cycles:
             diagnostics.append(

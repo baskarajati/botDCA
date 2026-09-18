@@ -1,6 +1,6 @@
 # botDCA
 
-Long-only geometric DCA trading bot for Bybit USDT perpetuals.
+Long-only geometric DCA trading bot for up to three Bybit USDT perpetuals.
 
 ## Status
 
@@ -26,7 +26,8 @@ Default DCA steps are expressed as percentage drops from the current weighted av
 7. 5.53% / size x1.466
 8. 5.11% / size x1.467
 
-These remain configurable reconstructed estimates until validation against the full trader export is complete.
+These are frozen reconstructed estimates for the initial trial, not a proven optimum.
+The original entry signal and DCA9–10 behavior remain unidentified; runtime stops at DCA8.
 
 ## Risk controls
 
@@ -241,29 +242,59 @@ The FastAPI root (`/`) serves an operations dashboard showing:
 - strategy margin cap and account reserve floor
 - account-aware next-DCA permission and reason
 
-Controls include resume, pause, and close-position-and-pause.
+Controls include guarded resume, pause, and confirmed close-position-and-pause requests.
+The console is split into Overview (`/`), Configuration (`/configuration`) and Journal
+(`/journal`). It shows worker/private-stream freshness, readiness checks, recent actual
+fills, CSV export and a read-only configuration fingerprint. Operator authentication
+is required for controls and credentialed account data. Client-side page navigation
+keeps the token in memory; reload requires reconnecting from Configuration.
+
+Configuration persists three strategy slots in the database. Each enabled slot
+selects a unique Bybit linear USDT perpetual and its own initial (DCA0) margin.
+The UI forecasts added and cumulative margin through DCA8 for each coin and the
+combined portfolio. Forecasts are informational: they never reserve funds,
+close a position or define a maximum loss. All enabled coins share the same
+Unified Account equity and reserve floor. Live workers make account/order
+decisions under one shared portfolio lock, while controls and worker leases
+remain symbol-specific.
+Stale data disables resume/close; locking the console does not pause trading.
+
+On a VPS, the Configuration page can validate a Bybit mainnet key and store its
+authenticated ciphertext in a dedicated persistent volume. The master encryption
+key, operator token and database URL are mounted as Docker secrets. The browser
+does not retain or redisplay the Bybit values, and successful credential storage
+does not start the worker or enable entries. Use only a private HTTPS path; the
+VPS Compose profile keeps the API port on loopback.
+
+`BOT_TRIAL_EQUITY_USDT=100` is the agreed trial reference, not an account balance
+or maximum-loss limit. Preview places no orders and is not a paper-trading simulator.
+See [the trial runbook](docs/TRIAL_RUNBOOK.md) for setup, data limitations and activation gates.
 
 ## Local development
 
 ```bash
-cp .env.example .env
+# Only copy if .env does not already exist; preserve existing configuration.
+cp -n .env.example .env
 docker compose up --build
 ```
 
 Dashboard/API: `http://localhost:8000`
 
+For the hardened VPS layout, follow [the trial runbook](docs/TRIAL_RUNBOOK.md)
+and layer `docker-compose.vps.yml` over the base Compose file. Do not put Bybit
+credentials in `.env`.
+
 ```bash
 curl http://localhost:8000/health
-curl http://localhost:8000/api/v1/bot/status
-curl http://localhost:8000/api/v1/account/status
+# Account/API routes require X-Operator-Token when configured.
 ```
 
 Run tests:
 
 ```bash
-pip install -e '.[dev]'
-ruff check botdca tests
-pytest -q
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/ruff check botdca tests
+.venv/bin/python -m pytest -q
 ```
 
 ## Safety defaults
@@ -276,10 +307,20 @@ pytest -q
 - unexpected short positions are refused
 - DCA planning is bounded by depth, strategy-margin, and account-reserve limits
 - worker errors fail closed by pausing re-entry
+- strong operator token, PostgreSQL and trial-reference checks gate live startup
+- mainnet additionally requires explicit operator preflight acknowledgement
+- hedge-mode exposure is refused rather than incorrectly treated as flat
+- execution history recovery precedes reconciliation on startup and reconnect
 
 ## Remaining before production use
 
-1. Validate minute-level replay directly against the complete exported HYPE trader history
-2. Run operator-approved end-to-end reconciliation tests against Bybit testnet or demo
-3. Validate partial-fill behavior with recorded exchange fixtures and testnet fault injection
-4. Finalize VPS/Tailscale deployment and operational runbook
+1. Verify Docker/PostgreSQL runtime and durable single-worker supervision on the target host
+2. Complete private HTTPS/VPS deployment checks and validate the restricted mainnet key
+3. Rehearse interruption/restart recovery without enabling entries
+4. Obtain explicit approval for the exact funded account and first mainnet activation
+5. Validate partial fills, recovery and close confirmation with the smallest approved live trial
+
+No additional strategy optimization is planned before this evidence-collection trial.
+Skipping testnet removes a valuable integration layer: the first order-path proof
+will use real funds. Local tests and a usable UI do not establish exchange
+readiness or profitability.

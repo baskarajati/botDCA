@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+from math import isfinite
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.exc import IntegrityError
 
 from botdca.bybit_events import ExecutionEvent, OrderEvent, PositionEvent
@@ -33,6 +34,18 @@ class EventStore:
 
     def record_execution(self, event: ExecutionEvent) -> bool:
         """Persist one fill exactly once. Returns False for a duplicate execId."""
+        if (
+            not event.execution_id
+            or not event.order_id
+            or event.side not in {"Buy", "Sell"}
+            or event.price <= 0
+            or event.qty <= 0
+            or event.execution_time_ms <= 0
+            or not all(isfinite(v) for v in (event.price, event.qty, event.fee, event.realized_pnl))
+        ):
+            raise ValueError(
+                "execution requires valid identifiers, side, time and finite positive price/quantity"
+            )
         record = ExecutionRecord(
             execution_id=event.execution_id,
             order_id=event.order_id,
@@ -129,7 +142,9 @@ class EventStore:
         statement = (
             select(PositionSnapshotRecord)
             .where(PositionSnapshotRecord.symbol == symbol.upper())
-            .order_by(desc(PositionSnapshotRecord.creation_time_ms), desc(PositionSnapshotRecord.id))
+            .order_by(
+                desc(PositionSnapshotRecord.creation_time_ms), desc(PositionSnapshotRecord.id)
+            )
             .limit(1)
         )
         with self.database.session_factory() as session:
@@ -170,6 +185,8 @@ class EventStore:
                     net_qty = 0.0
         if not open_rows:
             return None
+        if any(not row.order_link_id.startswith("botdca-") for row in open_rows):
+            return None  # Do not automatically take ownership of a manually opened basket.
 
         orders: dict[str, list[ExecutionRecord]] = {}
         order_sequence: list[str] = []
@@ -212,4 +229,136 @@ class EventStore:
 
     def execution_count(self) -> int:
         with self.database.session_factory() as session:
-            return len(session.scalars(select(ExecutionRecord.execution_id)).all())
+            return session.scalar(select(func.count()).select_from(ExecutionRecord))
+
+    def recent_executions(self, symbol: str, limit: int = 25) -> list[dict]:
+        statement = (
+            select(ExecutionRecord)
+            .where(ExecutionRecord.symbol == symbol.upper())
+            .order_by(desc(ExecutionRecord.execution_time_ms), desc(ExecutionRecord.execution_id))
+            .limit(limit)
+        )
+        fields = (
+            "execution_id",
+            "order_id",
+            "order_link_id",
+            "symbol",
+            "side",
+            "price",
+            "qty",
+            "fee",
+            "realized_pnl",
+            "execution_time_ms",
+        )
+        with self.database.session_factory() as session:
+            return [
+                {field: getattr(row, field) for field in fields}
+                for row in session.scalars(statement)
+            ]
+
+    def recent_executions_for_symbols(
+        self, symbols: list[str] | tuple[str, ...], limit: int = 25
+    ) -> list[dict]:
+        normalized = [symbol.upper() for symbol in symbols]
+        if not normalized:
+            return []
+        statement = (
+            select(ExecutionRecord)
+            .where(ExecutionRecord.symbol.in_(normalized))
+            .order_by(desc(ExecutionRecord.execution_time_ms), desc(ExecutionRecord.execution_id))
+            .limit(limit)
+        )
+        fields = (
+            "execution_id",
+            "order_id",
+            "order_link_id",
+            "symbol",
+            "side",
+            "price",
+            "qty",
+            "fee",
+            "realized_pnl",
+            "execution_time_ms",
+        )
+        with self.database.session_factory() as session:
+            return [
+                {field: getattr(row, field) for field in fields}
+                for row in session.scalars(statement)
+            ]
+
+    def execution_count_for_symbols(self, symbols: list[str] | tuple[str, ...]) -> int:
+        normalized = [symbol.upper() for symbol in symbols]
+        if not normalized:
+            return 0
+        with self.database.session_factory() as session:
+            return session.scalar(
+                select(func.count())
+                .select_from(ExecutionRecord)
+                .where(ExecutionRecord.symbol.in_(normalized))
+            )
+
+    def symbol_execution_count(self, symbol: str) -> int:
+        with self.database.session_factory() as session:
+            return session.scalar(
+                select(func.count())
+                .select_from(ExecutionRecord)
+                .where(ExecutionRecord.symbol == symbol.upper())
+            )
+
+    def recent_events(self, symbol: str, limit: int = 20) -> list[dict]:
+        statement = (
+            select(StrategyEventRecord)
+            .where(StrategyEventRecord.symbol == symbol.upper())
+            .order_by(desc(StrategyEventRecord.id))
+            .limit(limit)
+        )
+        with self.database.session_factory() as session:
+            return [
+                {
+                    "id": row.id,
+                    "occurred_at": row.occurred_at.isoformat(),
+                    "event_type": row.event_type,
+                    "cycle_id": row.cycle_id,
+                    "payload": row.payload,
+                }
+                for row in session.scalars(statement)
+            ]
+
+    def recent_events_for_symbols(
+        self, symbols: list[str] | tuple[str, ...], limit: int = 20
+    ) -> list[dict]:
+        normalized = [symbol.upper() for symbol in symbols]
+        if not normalized:
+            return []
+        statement = (
+            select(StrategyEventRecord)
+            .where(StrategyEventRecord.symbol.in_(normalized))
+            .order_by(desc(StrategyEventRecord.id))
+            .limit(limit)
+        )
+        with self.database.session_factory() as session:
+            return [
+                {
+                    "id": row.id,
+                    "occurred_at": row.occurred_at.isoformat(),
+                    "event_type": row.event_type,
+                    "symbol": row.symbol,
+                    "cycle_id": row.cycle_id,
+                    "payload": row.payload,
+                }
+                for row in session.scalars(statement)
+            ]
+
+    def execution_recovery_checkpoint(self, symbol: str) -> int | None:
+        statement = (
+            select(StrategyEventRecord)
+            .where(
+                StrategyEventRecord.symbol == symbol.upper(),
+                StrategyEventRecord.event_type == "EXECUTION_RECOVERY",
+            )
+            .order_by(desc(StrategyEventRecord.id))
+            .limit(1)
+        )
+        with self.database.session_factory() as session:
+            row = session.scalar(statement)
+            return row.payload["end_ms"] if row is not None else None

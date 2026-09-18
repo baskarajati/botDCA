@@ -1,4 +1,6 @@
-from botdca.strategy import DcaStrategy, StrategyConfig
+import pytest
+
+from botdca.strategy import DcaStrategy, DcaTriggerReference, StrategyConfig
 
 
 def test_initial_cycle_and_tp() -> None:
@@ -61,3 +63,38 @@ def test_resume_after_paused_cycle_restores_active_management() -> None:
 
     assert strategy.state.value == "active"
     assert strategy.reentry_enabled is True
+
+
+def test_trigger_reference_models_use_distinct_second_dca_bases() -> None:
+    triggers: dict[DcaTriggerReference, float] = {}
+    for reference in DcaTriggerReference:
+        strategy = DcaStrategy(StrategyConfig(), trigger_reference=reference)
+        strategy.resume()
+        strategy.begin_cycle(100.0)
+        first_trigger = strategy.next_dca_trigger_price()
+        assert first_trigger is not None
+        strategy.apply_dca_fill(first_trigger)
+        second_trigger = strategy.next_dca_trigger_price()
+        assert second_trigger is not None
+        triggers[reference] = second_trigger
+
+    assert triggers[DcaTriggerReference.PREVIOUS_FILL] < triggers[
+        DcaTriggerReference.WEIGHTED_AVERAGE
+    ]
+    assert triggers[DcaTriggerReference.WEIGHTED_AVERAGE] < triggers[
+        DcaTriggerReference.INITIAL_ENTRY
+    ]
+
+
+def test_non_average_reference_rejects_aggregated_deep_restore() -> None:
+    strategy = DcaStrategy(
+        StrategyConfig(), trigger_reference=DcaTriggerReference.PREVIOUS_FILL
+    )
+
+    with pytest.raises(ValueError, match="individual restored fill history"):
+        strategy.restore_cycle(
+            average_entry=98.0,
+            total_qty=1.0,
+            dca_level=1,
+            last_order_qty=0.5,
+        )
