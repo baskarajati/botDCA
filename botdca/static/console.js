@@ -177,6 +177,13 @@ function updateControls() {
     !fresh ||
     !snapshot?.configuration?.console?.operator_token_configured ||
     Object.values(snapshot?.workers || {}).some((worker) => worker.running);
+  const activationButton = $("activation-advance");
+  if (activationButton) {
+    // Keep it dark while any other control is in flight; renderActivationControl
+    // decides whether it is offerable at all.
+    activationButton.disabled =
+      busy || !activationButton.dataset.nextStatus || !operatorToken;
+  }
   document.querySelectorAll("[data-basket-action]").forEach((button) => {
     const action = button.dataset.basketAction;
     const symbol = button.dataset.symbol;
@@ -630,6 +637,7 @@ function renderStrategyVersion(status) {
     "strategy-activation",
     status.activation ? status.activation.status : "unknown",
   );
+  renderActivationControl(status);
   setText(
     "strategy-research-note",
     version.research_dca_triggers.length
@@ -1048,8 +1056,87 @@ $("strategy-slots-form").addEventListener("submit", async (event) => {
   }
 });
 
+
+// -- activation ------------------------------------------------------------
+// Activation advances one step at a time and the API refuses to skip, so the
+// console offers exactly the next step. It is refused while any worker runs,
+// which is why the button says so instead of failing after the click.
+const ACTIVATION_ORDER = [
+  "draft",
+  "validated",
+  "approved_for_testnet",
+  "approved_for_mainnet_trial",
+];
+
+function nextActivationStatus(current, required) {
+  const at = ACTIVATION_ORDER.indexOf(current);
+  const target = ACTIVATION_ORDER.indexOf(required);
+  if (at < 0 || target < 0 || at >= target) return null;
+  return ACTIVATION_ORDER[at + 1];
+}
+
+function renderActivationControl(status) {
+  const button = $("activation-advance");
+  if (!button) return;
+  const activation = status.activation;
+  const current = activation ? activation.status : null;
+  const required = activation ? activation.required_status : null;
+  const next = current && required ? nextActivationStatus(current, required) : null;
+  const workersRunning = Object.values(status.workers || {}).some(
+    (worker) => worker.running,
+  );
+
+  let hint = "";
+  if (!activation) {
+    hint = "Activation status is unavailable.";
+  } else if (activation.allowed) {
+    hint = `Approved for ${activation.environment}. No further step is needed.`;
+  } else if (!next) {
+    hint = `Activation is ${current}. Advance it from the configuration page.`;
+  } else if (workersRunning) {
+    hint = "Stop the live worker before changing activation.";
+  } else {
+    hint = `Next step: ${next}. ${ACTIVATION_ORDER.indexOf(required) - ACTIVATION_ORDER.indexOf(current)} step(s) to ${required}.`;
+  }
+  setText("activation-hint", hint);
+
+  button.textContent = next ? `Advance to ${next}` : "Advance activation";
+  button.dataset.nextStatus = next || "";
+  button.disabled = busy || !next || workersRunning || !operatorToken;
+}
+
+async function advanceActivation() {
+  const button = $("activation-advance");
+  const target = button?.dataset.nextStatus;
+  if (busy || !target) return;
+  busy = true;
+  updateControls();
+  try {
+    const result = await (
+      await request("/api/v1/configuration/activation", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: target }),
+      })
+    ).json();
+    await load();
+    const reached = result?.gate?.status || target;
+    showNotice(
+      result?.gate?.allowed
+        ? `Activation is ${reached}. The configuration may now run live.`
+        : `Activation advanced to ${reached}. Advance again to reach ${result?.gate?.required_status || "the required status"}.`,
+    );
+  } catch (error) {
+    showNotice(error.message);
+  } finally {
+    busy = false;
+    updateControls();
+  }
+}
+
 $("resume").addEventListener("click", () => runAction("resume"));
 $("pause").addEventListener("click", () => runAction("pause"));
+$("activation-advance").addEventListener("click", advanceActivation);
 $("close").addEventListener("click", () => {
   selectedCloseSymbol = snapshot?.bot?.symbol || "";
   $("confirm-symbol").value = "";

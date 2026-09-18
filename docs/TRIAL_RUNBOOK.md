@@ -160,6 +160,19 @@ pressing Save can never make a freshly edited experimental strategy
 mainnet-live. `RETIRED` is always reachable and never runs. Mainnet still
 additionally requires `BOT_MAINNET_PREFLIGHT_APPROVED=true`.
 
+Advance it from the console. The strategy panel shows the current status and
+offers exactly the next step, because the API refuses to skip one. The button
+is unavailable while a live worker runs, which is the same rule the endpoint
+enforces (`PUT /api/v1/configuration/activation` answers 409). Stop the worker,
+advance to the required status, then start it again.
+
+An unapproved configuration stops the **worker**, never the API. The service
+starts, reports the reason as `live_worker_blocked` on `/health`, and keeps
+serving so the configuration can be approved. This matters because activation
+can only be advanced through this service: an API that refused to start would
+remove the one control that resolves the refusal, and the Compose restart
+policy would retry the same failure forever.
+
 ## Alerts
 
 Alerts are raised by the runtime and delivered by sinks, so no vendor appears in
