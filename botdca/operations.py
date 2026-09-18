@@ -10,6 +10,19 @@ def configuration_snapshot(settings, runtime, *, credential_vault=None, strategy
     configuration = {
         "strategy": {**asdict(runtime.strategy.config), "direction": "long-only"},
         "risk_limits": asdict(runtime.risk_limits),
+        "portfolio_guards": asdict(runtime.portfolio_guards),
+        "strategy_version": (
+            runtime.strategy_version.describe()
+            if getattr(runtime, "strategy_version", None) is not None
+            else None
+        ),
+        "trial_mode": {
+            "enabled": settings.bot_trial_mode,
+            "max_active_symbols": settings.effective_max_active_symbols,
+            "max_dca_level": settings.effective_max_dca_level,
+            "max_portfolio_margin_usdt": settings.effective_max_total_bot_margin_usdt,
+            "manual_resume_after_restart": settings.bot_trial_manual_resume_after_restart,
+        },
         "reentry_delay_seconds": settings.bot_reentry_delay_seconds,
         "worker_interval_seconds": settings.bot_worker_interval_seconds,
         "exchange_environment": "testnet" if settings.bybit_testnet else "mainnet",
@@ -67,8 +80,16 @@ def live_configuration_errors(settings):
         errors.append("Set BOT_OPERATOR_TOKEN to a random token of at least 32 characters.")
     if settings.bot_trial_equity_usdt is None:
         errors.append("Set BOT_TRIAL_EQUITY_USDT to the operator-approved trial reference.")
-    elif settings.bot_max_strategy_margin_usdt > settings.bot_trial_equity_usdt:
-        errors.append("Strategy margin cap exceeds the trial equity reference.")
+    else:
+        if settings.bot_max_strategy_margin_usdt > settings.bot_trial_equity_usdt:
+            errors.append("Strategy margin cap exceeds the trial equity reference.")
+        # The portfolio cap is the one that binds when several coins escalate
+        # together, so it matters more than any single symbol's cap.
+        if settings.effective_max_total_bot_margin_usdt > settings.bot_trial_equity_usdt:
+            errors.append(
+                "Portfolio margin cap exceeds the trial equity reference. "
+                "Lower BOT_MAX_TOTAL_BOT_MARGIN_USDT."
+            )
     if not 0 < settings.bot_base_margin_usdt <= settings.bot_max_strategy_margin_usdt:
         errors.append("Base margin must be positive and within the strategy margin cap.")
     if not settings.database_url.startswith("postgresql"):

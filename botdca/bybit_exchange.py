@@ -203,6 +203,44 @@ class BybitExchange:
             account_mm_rate=_as_float(row.get("accountMMRate")),
         )
 
+    def get_transaction_log(
+        self,
+        *,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 100,
+        max_pages: int = 10,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Read the Unified Account transaction log for funding attribution.
+
+        Returns the rows and whether pagination was truncated. A truncated
+        window must never be reported as complete accounting.
+        """
+        rows: list[dict[str, Any]] = []
+        cursor = ""
+        truncated = False
+        for _ in range(max_pages):
+            parameters: dict[str, Any] = {
+                "accountType": "UNIFIED",
+                "category": "linear",
+                "limit": limit,
+            }
+            if start_time_ms is not None:
+                parameters["startTime"] = start_time_ms
+            if end_time_ms is not None:
+                parameters["endTime"] = end_time_ms
+            if cursor:
+                parameters["cursor"] = cursor
+            response = self._require_ok(self.session.get_transaction_log(**parameters))
+            result = response.get("result", {})
+            rows.extend(result.get("list", []))
+            cursor = str(result.get("nextPageCursor") or "")
+            if not cursor:
+                break
+        else:
+            truncated = bool(cursor)
+        return rows, truncated
+
     def get_api_key_information(self) -> dict[str, Any]:
         response = self._require_ok(self.session.get_api_key_information())
         result = response.get("result")

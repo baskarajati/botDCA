@@ -125,6 +125,83 @@
       </section>
 
       <section
+        id="portfolio"
+        class="panel"
+        data-page-view="overview"
+        aria-labelledby="portfolio-title"
+      >
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">Shared portfolio budget</p>
+            <h2 id="portfolio-title">One account, one risk budget</h2>
+            <p class="supporting">
+              Every enabled coin draws on the same Bybit Unified Account. Entries
+              and DCA are authorised against the whole portfolio, never per coin.
+            </p>
+          </div>
+          <span id="portfolio-state" class="status-text">Waiting</span>
+        </div>
+        <div class="metrics metrics-six">
+          <div class="metric">
+            <span>Committed margin</span><strong id="portfolio-margin">—</strong>
+          </div>
+          <div class="metric">
+            <span>Margin budget</span><strong id="portfolio-margin-cap">—</strong>
+          </div>
+          <div class="metric">
+            <span>Portfolio notional</span><strong id="portfolio-notional">—</strong>
+          </div>
+          <div class="metric">
+            <span>Deep baskets</span><strong id="portfolio-deep">—</strong>
+          </div>
+          <div class="metric">
+            <span>Floating P&amp;L</span><strong id="portfolio-upl">—</strong>
+          </div>
+          <div class="metric">
+            <span>Available equity</span><strong id="portfolio-available">—</strong>
+          </div>
+        </div>
+        <p id="portfolio-intervention" class="notice danger" role="alert" hidden></p>
+      </section>
+
+      <section
+        id="strategy-version"
+        class="panel"
+        data-page-view="overview"
+        aria-labelledby="strategy-version-title"
+      >
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">Strategy family</p>
+            <h2 id="strategy-version-title">Versioned strategy</h2>
+          </div>
+          <span id="strategy-version-status" class="mode-chip">—</span>
+        </div>
+        <div class="metrics metrics-six">
+          <div class="metric">
+            <span>Version</span><strong id="strategy-version-id">—</strong>
+          </div>
+          <div class="metric">
+            <span>Direction &amp; margin</span><strong id="strategy-direction">—</strong>
+          </div>
+          <div class="metric">
+            <span>Take profit</span><strong id="strategy-tp">—</strong>
+          </div>
+          <div class="metric">
+            <span>Size multiplier</span><strong id="strategy-multiplier">—</strong>
+          </div>
+          <div class="metric">
+            <span>Live ladder</span><strong id="strategy-live-ladder">—</strong>
+          </div>
+          <div class="metric">
+            <span>Activation</span><strong id="strategy-activation">—</strong>
+          </div>
+        </div>
+        <p id="strategy-version-summary" class="supporting"></p>
+        <p id="strategy-research-note" class="supporting"></p>
+      </section>
+
+      <section
         class="panel"
         data-page-view="overview"
         aria-labelledby="capital-title"
@@ -507,6 +584,39 @@
           <div class="metric">
             <span>Exchange environment</span><strong id="environment">—</strong>
           </div>
+        </div>
+      </section>
+
+      <section
+        id="alerts"
+        class="panel"
+        data-page-view="journal"
+        aria-labelledby="alerts-title"
+      >
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">Operational alerts</p>
+            <h2 id="alerts-title">Critical conditions</h2>
+            <p class="supporting">
+              Persistent states are deduplicated, so a condition re-checked every
+              two seconds appears once, not thousands of times.
+            </p>
+          </div>
+          <span id="alerts-state" class="status-text">Waiting</span>
+        </div>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Severity</th>
+                <th scope="col">Symbol</th>
+                <th scope="col">Condition</th>
+                <th scope="col">Message</th>
+              </tr>
+            </thead>
+            <tbody id="alerts-rows"></tbody>
+          </table>
         </div>
       </section>
 

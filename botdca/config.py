@@ -1,8 +1,20 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import Field, model_validator
+from pydantic import BeforeValidator, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _blank_is_none(value):
+    """Treat an empty .env value as unset rather than as a parse error."""
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+#: An optional number that may be left blank in a .env file.
+OptionalFloat = Annotated[float | None, BeforeValidator(_blank_is_none)]
 
 
 class Settings(BaseSettings):
@@ -18,7 +30,9 @@ class Settings(BaseSettings):
         default=["localhost", "127.0.0.1", "[::1]"],
         alias="BOT_ALLOWED_HOSTS",
     )
-    bot_trial_equity_usdt: float | None = Field(default=None, gt=0, alias="BOT_TRIAL_EQUITY_USDT")
+    bot_trial_equity_usdt: OptionalFloat = Field(
+        default=None, gt=0, alias="BOT_TRIAL_EQUITY_USDT"
+    )
     bot_mainnet_preflight_approved: bool = Field(
         default=False, alias="BOT_MAINNET_PREFLIGHT_APPROVED"
     )
@@ -52,6 +66,52 @@ class Settings(BaseSettings):
         alias="BOT_MIN_AVAILABLE_EQUITY_RATIO",
     )
 
+    # -- strategy family ------------------------------------------------
+    bot_strategy_version_id: str = Field(
+        default="greensynergy-reconstructed-v1",
+        alias="BOT_STRATEGY_VERSION_ID",
+    )
+
+    # -- portfolio risk ---------------------------------------------------
+    # Evaluated across every enabled symbol against one Bybit Unified Account.
+    bot_max_total_bot_margin_usdt: float = Field(
+        default=240.0, gt=0, alias="BOT_MAX_TOTAL_BOT_MARGIN_USDT"
+    )
+    bot_max_total_bot_notional_usdt: float = Field(
+        default=6000.0, gt=0, alias="BOT_MAX_TOTAL_BOT_NOTIONAL_USDT"
+    )
+    bot_deep_dca_level: int = Field(default=5, ge=1, le=8, alias="BOT_DEEP_DCA_LEVEL")
+    bot_max_simultaneous_deep_baskets: int = Field(
+        default=1, ge=0, le=3, alias="BOT_MAX_SIMULTANEOUS_DEEP_BASKETS"
+    )
+    bot_max_total_floating_loss_usdt: OptionalFloat = Field(
+        default=None, gt=0, alias="BOT_MAX_TOTAL_FLOATING_LOSS_USDT"
+    )
+
+    # -- first-trial mode -------------------------------------------------
+    # A constrained configuration for the first live run. Limits are operator
+    # configuration, never hardcoded recommendations.
+    bot_trial_mode: bool = Field(default=False, alias="BOT_TRIAL_MODE")
+    bot_trial_max_active_symbols: int = Field(
+        default=1, ge=1, le=3, alias="BOT_TRIAL_MAX_ACTIVE_SYMBOLS"
+    )
+    bot_trial_max_dca_level: int = Field(
+        default=4, ge=0, le=8, alias="BOT_TRIAL_MAX_DCA_LEVEL"
+    )
+    bot_trial_max_portfolio_margin_usdt: float = Field(
+        default=25.0, gt=0, alias="BOT_TRIAL_MAX_PORTFOLIO_MARGIN_USDT"
+    )
+    bot_trial_manual_resume_after_restart: bool = Field(
+        default=True, alias="BOT_TRIAL_MANUAL_RESUME_AFTER_RESTART"
+    )
+
+    # -- alerting ---------------------------------------------------------
+    bot_alert_webhook_url: str = Field(default="", alias="BOT_ALERT_WEBHOOK_URL", repr=False)
+    bot_alert_min_severity: str = Field(default="warning", alias="BOT_ALERT_MIN_SEVERITY")
+    bot_alert_dedupe_seconds: float = Field(
+        default=900.0, gt=0, alias="BOT_ALERT_DEDUPE_SECONDS"
+    )
+
     database_url: str = Field(
         default="postgresql+psycopg://botdca:botdca@db:5432/botdca",
         alias="DATABASE_URL",
@@ -73,6 +133,52 @@ class Settings(BaseSettings):
         default=False,
         alias="BOT_TRUSTED_HTTPS_PROXY",
     )
+
+    @field_validator("bot_alert_min_severity")
+    @classmethod
+    def validate_alert_severity(cls, value: str) -> str:
+        allowed = {"info", "warning", "critical"}
+        normalized = value.strip().lower()
+        if normalized not in allowed:
+            raise ValueError(
+                f"BOT_ALERT_MIN_SEVERITY must be one of {', '.join(sorted(allowed))}"
+            )
+        return normalized
+
+    @field_validator("bot_strategy_version_id")
+    @classmethod
+    def validate_strategy_version(cls, value: str) -> str:
+        # Imported here so config stays importable without the strategy package.
+        from botdca.strategy_version import STRATEGY_VERSIONS
+
+        normalized = value.strip()
+        if normalized not in STRATEGY_VERSIONS:
+            known = ", ".join(sorted(STRATEGY_VERSIONS))
+            raise ValueError(
+                f"BOT_STRATEGY_VERSION_ID {normalized!r} is unknown; known versions: {known}"
+            )
+        return normalized
+
+    @property
+    def effective_max_dca_level(self) -> int:
+        """Trial mode may only ever reduce the live ladder depth, never raise it."""
+        if self.bot_trial_mode:
+            return min(self.bot_max_dca_level, self.bot_trial_max_dca_level)
+        return self.bot_max_dca_level
+
+    @property
+    def effective_max_total_bot_margin_usdt(self) -> float:
+        """Trial mode may only ever tighten the portfolio margin cap."""
+        if self.bot_trial_mode:
+            return min(
+                self.bot_max_total_bot_margin_usdt,
+                self.bot_trial_max_portfolio_margin_usdt,
+            )
+        return self.bot_max_total_bot_margin_usdt
+
+    @property
+    def effective_max_active_symbols(self) -> int:
+        return self.bot_trial_max_active_symbols if self.bot_trial_mode else 3
 
     @model_validator(mode="after")
     def load_mounted_secrets(self):

@@ -14,6 +14,16 @@ class BotState(StrEnum):
     ERROR = "error"
 
 
+class BasketStatus(StrEnum):
+    """Lifecycle of one basket, independent of operator pause state."""
+
+    FLAT = "flat"
+    OPEN = "open"
+    #: The configured live maximum was reached. No further normal DCA is placed,
+    #: but TP management, reconciliation and manual reduce-only close stay active.
+    MAX_DCA_REACHED = "max_dca_reached"
+
+
 @dataclass(frozen=True)
 class DcaStep:
     drop_percent_from_average: float
@@ -50,6 +60,11 @@ class TradingCycle:
     realized_pnl_usdt: float = 0.0
     dca_level_override: int | None = None
     last_order_qty_override: float | None = None
+    #: The strategy version this basket opened with. A basket is pinned to it for
+    #: its whole life, so editing parameters can never alter an open basket.
+    strategy_version_id: str | None = None
+    #: Deepest DCA level this basket may reach, fixed at open time.
+    max_dca_level: int | None = None
 
     @property
     def total_qty(self) -> float:
@@ -82,3 +97,13 @@ class TradingCycle:
         if avg is None:
             return None
         return avg * (1 + self.tp_percent / 100)
+
+    @property
+    def at_max_dca(self) -> bool:
+        return self.max_dca_level is not None and self.dca_level >= self.max_dca_level
+
+    @property
+    def status(self) -> BasketStatus:
+        if self.total_qty <= 0:
+            return BasketStatus.FLAT
+        return BasketStatus.MAX_DCA_REACHED if self.at_max_dca else BasketStatus.OPEN

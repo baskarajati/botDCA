@@ -1224,3 +1224,23 @@ dialog::backdrop {
     border-top: 1px solid var(--line);
   }
 }
+
+/* PR #4: portfolio budget, strategy version and alert surfaces. */
+.row-danger td {
+  color: #ffc3c3;
+  font-weight: 600;
+}
+
+#portfolio-intervention {
+  margin-top: 1rem;
+}
+
+#strategy-version-summary,
+#strategy-research-note {
+  margin-top: 0.75rem;
+}
+
+#strategy-research-note {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}

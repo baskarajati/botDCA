@@ -28,7 +28,16 @@ class FakeDeployment:
 async def test_api_lifespan_explicitly_starts_and_stops_enabled_worker(monkeypatch) -> None:
     deployment = FakeDeployment()
     monkeypatch.setattr(api.settings, "bot_start_live_worker", True)
-    monkeypatch.setattr(api, "build_live_worker_deployment", lambda settings, runtime: deployment)
+    monkeypatch.setattr(api.settings, "bybit_testnet", True)
+    monkeypatch.setattr(
+        api, "build_live_worker_deployment", lambda settings, runtime, **kwargs: deployment
+    )
+    # A configuration must be explicitly approved for this environment first.
+    monkeypatch.setattr(
+        api,
+        "default_strategy_slots",
+        lambda symbol, margin: _approved_slots(symbol, margin),
+    )
 
     async with api.lifespan(api.app):
         assert deployment.started is True
@@ -36,6 +45,57 @@ async def test_api_lifespan_explicitly_starts_and_stops_enabled_worker(monkeypat
 
     assert deployment.stopped is True
     assert api.app.state.live_worker is None
+
+
+def _approved_slots(symbol, margin):
+    from botdca.activation import ActivationStatus
+    from botdca.strategy_slots import StrategySlot
+
+    return (
+        StrategySlot(
+            1, True, symbol.upper(), margin,
+            activation_status=ActivationStatus.APPROVED_FOR_TESTNET,
+        ),
+        StrategySlot(2, False, "BTCUSDT", margin),
+        StrategySlot(3, False, "ETHUSDT", margin),
+    )
+
+
+@pytest.mark.asyncio
+async def test_api_lifespan_refuses_to_start_a_draft_configuration(monkeypatch) -> None:
+    """Saving a strategy must never be enough to start trading it."""
+    deployment = FakeDeployment()
+    monkeypatch.setattr(api.settings, "bot_start_live_worker", True)
+    monkeypatch.setattr(api.settings, "bybit_testnet", True)
+    monkeypatch.setattr(
+        api, "build_live_worker_deployment", lambda settings, runtime, **kwargs: deployment
+    )
+
+    with pytest.raises(RuntimeError, match="Live worker startup blocked"):
+        async with api.lifespan(api.app):
+            pass
+
+    assert deployment.started is False
+
+
+@pytest.mark.asyncio
+async def test_api_lifespan_refuses_mainnet_without_operator_preflight(monkeypatch) -> None:
+    deployment = FakeDeployment()
+    monkeypatch.setattr(api.settings, "bot_start_live_worker", True)
+    monkeypatch.setattr(api.settings, "bybit_testnet", False)
+    monkeypatch.setattr(api.settings, "bot_mainnet_preflight_approved", False)
+    monkeypatch.setattr(
+        api, "build_live_worker_deployment", lambda settings, runtime, **kwargs: deployment
+    )
+    monkeypatch.setattr(
+        api, "default_strategy_slots", lambda symbol, margin: _approved_slots(symbol, margin)
+    )
+
+    with pytest.raises(RuntimeError, match="Live worker startup blocked"):
+        async with api.lifespan(api.app):
+            pass
+
+    assert deployment.started is False
 
 
 @pytest.mark.asyncio

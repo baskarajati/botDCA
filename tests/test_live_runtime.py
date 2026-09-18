@@ -22,6 +22,9 @@ def _settings(**overrides) -> Settings:
         "BYBIT_TESTNET": True,
         "BOT_OPERATOR_TOKEN": "test-only-operator-token-more-than-32-chars",
         "BOT_TRIAL_EQUITY_USDT": 100,
+        # The portfolio cap must stay within the trial equity reference; it is
+        # the guard that binds when several coins escalate together.
+        "BOT_MAX_TOTAL_BOT_MARGIN_USDT": 80,
         "DATABASE_URL": "postgresql+psycopg://unit:unit@localhost/unit",
     }
     values.update(overrides)

@@ -5,7 +5,7 @@ from hashlib import sha256
 from threading import Lock
 from typing import Any, ClassVar
 
-from sqlalchemy import JSON, Boolean, Float, Integer, String, create_engine, text
+from sqlalchemy import JSON, Boolean, Float, Integer, String, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -84,10 +84,49 @@ class StrategySlotRecord(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     symbol: Mapped[str] = mapped_column(String(32))
     base_margin_usdt: Mapped[float] = mapped_column(Float)
+    sizing_mode: Mapped[str] = mapped_column(String(32), default="fixed_margin_usdt")
+    sizing_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    strategy_version_id: Mapped[str] = mapped_column(
+        String(64), default="greensynergy-reconstructed-v1"
+    )
+    activation_status: Mapped[str] = mapped_column(String(32), default="draft")
     updated_at: Mapped[datetime] = mapped_column(
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
     )
+
+
+class AlertRecord(Base):
+    """Durable record of every dispatched alert, for audit and deduplication."""
+
+    __tablename__ = "alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    occurred_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC), index=True)
+    condition: Mapped[str] = mapped_column(String(64), index=True)
+    severity: Mapped[str] = mapped_column(String(16), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(160), index=True)
+    message: Mapped[str] = mapped_column(String(512))
+    context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+#: Columns added after the first release. `create_all` never alters an existing
+#: table, so an additive migration runs alongside it. Each entry is
+#: (table, column, DDL type, default literal).
+_ADDITIVE_COLUMNS: tuple[tuple[str, str, str, str], ...] = (
+    ("strategy_slots", "sizing_mode", "VARCHAR(32)", "'fixed_margin_usdt'"),
+    ("strategy_slots", "sizing_value", "FLOAT", "NULL"),
+    (
+        "strategy_slots",
+        "strategy_version_id",
+        "VARCHAR(64)",
+        "'greensynergy-reconstructed-v1'",
+    ),
+    ("strategy_slots", "activation_status", "VARCHAR(32)", "'draft'"),
+)
 
 
 class Database:
@@ -101,6 +140,28 @@ class Database:
 
     def create_schema(self) -> None:
         Base.metadata.create_all(self.engine)
+        self.apply_additive_migrations()
+
+    def apply_additive_migrations(self) -> None:
+        """Add columns introduced after a table already existed.
+
+        Only additive, nullable-or-defaulted columns are handled. Nothing is
+        dropped, renamed or retyped, so an older deployment upgrades in place
+        without losing configuration or journal history.
+        """
+        inspector = inspect(self.engine)
+        existing_tables = set(inspector.get_table_names())
+        with self.engine.begin() as connection:
+            for table, column, column_type, default in _ADDITIVE_COLUMNS:
+                if table not in existing_tables:
+                    continue
+                columns = {row["name"] for row in inspector.get_columns(table)}
+                if column in columns:
+                    continue
+                clause = f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"
+                if default != "NULL":
+                    clause += f" DEFAULT {default}"
+                connection.execute(text(clause))
 
 
 class WorkerLease:

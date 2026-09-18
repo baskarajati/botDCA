@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
+from botdca.alerts import (
+    AlertDispatcher,
+    AlertSeverity,
+    JournalAlertSink,
+    MemoryAlertSink,
+    WebhookAlertSink,
+)
 from botdca.bybit_exchange import BybitExchange
 from botdca.bybit_stream import BybitPrivateStream
 from botdca.config import Settings
@@ -14,12 +21,55 @@ from botdca.instruments import BybitInstrumentClient
 from botdca.live_service import LiveStrategyService
 from botdca.operations import configuration_snapshot, live_configuration_errors
 from botdca.persistence import EventStore
+from botdca.portfolio import PortfolioCoordinator, SymbolExposure
 from botdca.runtime import BotRuntime
 from botdca.worker import LiveWorker
 
 
 class LiveWorkerConfigurationError(RuntimeError):
     pass
+
+
+def build_alert_dispatcher(settings: Settings, store: EventStore) -> AlertDispatcher:
+    """Journal sink always; an optional vendor-neutral webhook when configured."""
+    dispatcher = AlertDispatcher(
+        [JournalAlertSink(store), MemoryAlertSink()],
+        cooldown_seconds=settings.bot_alert_dedupe_seconds,
+    )
+    if settings.bot_alert_webhook_url:
+        dispatcher.add_sink(
+            WebhookAlertSink(
+                settings.bot_alert_webhook_url,
+                min_severity=AlertSeverity(settings.bot_alert_min_severity),
+            )
+        )
+    return dispatcher
+
+
+def build_portfolio_coordinator(
+    settings: Settings,
+    runtime: BotRuntime,
+    *,
+    account_reader,
+) -> PortfolioCoordinator:
+    """One coordinator per process, shared by every symbol's live service.
+
+    `services` is filled in after construction because each service needs the
+    coordinator's lock, and the coordinator needs each service's exposure.
+    """
+    services: list = []
+
+    def exposure_reader() -> tuple[SymbolExposure, ...]:
+        return tuple(service.exposure() for service in services)
+
+    coordinator = PortfolioCoordinator(
+        guards=runtime.portfolio_guards,
+        account_reader=account_reader,
+        exposure_reader=exposure_reader,
+        lock=runtime.lock,
+    )
+    coordinator.services = services  # type: ignore[attr-defined]
+    return coordinator
 
 
 @dataclass
@@ -51,6 +101,8 @@ def build_live_worker_deployment(
     exchange_factory: Callable[..., Any] = BybitExchange,
     instrument_client_factory: Callable[..., Any] = BybitInstrumentClient,
     stream_factory: Callable[..., Any] = BybitPrivateStream,
+    coordinator: PortfolioCoordinator | None = None,
+    alerts: AlertDispatcher | None = None,
 ) -> LiveWorkerDeployment:
     if not settings.bot_live_trading:
         raise LiveWorkerConfigurationError("BOT_LIVE_TRADING must be true")
@@ -84,6 +136,15 @@ def build_live_worker_deployment(
         testnet=settings.bybit_testnet,
         processor=processor,
     )
+    dispatcher = alerts or build_alert_dispatcher(settings, store)
+    if coordinator is None:
+        coordinator = build_portfolio_coordinator(
+            settings,
+            runtime,
+            # Resolved lazily so construction never depends on the adapter being
+            # able to read the account.
+            account_reader=lambda: exchange.get_account_snapshot(),
+        )
     service = LiveStrategyService(
         strategy=runtime.strategy,
         exchange=exchange,
@@ -92,13 +153,21 @@ def build_live_worker_deployment(
         risk_limits=runtime.risk_limits,
         reentry_delay_seconds=settings.bot_reentry_delay_seconds,
         lock=runtime.lock,
+        coordinator=coordinator,
+        alerts=dispatcher,
+        deep_dca_level=settings.bot_deep_dca_level,
     )
+    # Register this symbol so portfolio exposure spans every running service.
+    registered = getattr(coordinator, "services", None)
+    if registered is not None and service not in registered:
+        registered.append(service)
     worker = LiveWorker(
         service=service,
         stream=stream,
         store=store,
         interval_seconds=settings.bot_worker_interval_seconds,
         execution_recovery=ExecutionRecovery(exchange, store, symbol),
+        alerts=dispatcher,
     )
     store.record_strategy_event(
         event_type="STRATEGY_CONFIG",
@@ -106,6 +175,12 @@ def build_live_worker_deployment(
         payload={
             **configuration_snapshot(settings, runtime),
             "instrument_rules": {k: str(v) for k, v in vars(rules).items()},
+            "strategy_version": (
+                runtime.strategy_version.describe()
+                if runtime.strategy_version is not None
+                else None
+            ),
+            "portfolio_guards": asdict(runtime.portfolio_guards),
         },
     )
     return LiveWorkerDeployment(

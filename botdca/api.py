@@ -15,6 +15,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from botdca.accounting import build_accounting
+from botdca.activation import (
+    ActivationGate,
+    ActivationStatus,
+    require_transition,
+)
+from botdca.activation import rank as activation_rank
 from botdca.bybit_exchange import BybitApiError, BybitExchange
 from botdca.config import get_settings
 from botdca.controller import ControllerSafetyError, TradingController
@@ -27,12 +34,20 @@ from botdca.credentials import (
 )
 from botdca.dashboard import DASHBOARD_HTML
 from botdca.database import Database
+from botdca.forecast import (
+    forecast_symbol,
+    portfolio_scenarios,
+    research_expansion,
+    worst_case_scenario,
+)
 from botdca.instruments import BybitInstrumentClient
 from botdca.live_runtime import LiveWorkerDeployment, build_live_worker_deployment
 from botdca.operations import configuration_snapshot, live_configuration_errors
 from botdca.persistence import EventStore
+from botdca.portfolio import PortfolioSnapshot, SymbolExposure
 from botdca.risk import evaluate_next_dca
 from botdca.runtime import BotRuntime
+from botdca.sizing import SizingMode
 from botdca.strategy_slots import (
     StrategySlot,
     StrategySlotStore,
@@ -41,6 +56,7 @@ from botdca.strategy_slots import (
     serialized_slot,
     validate_strategy_slots,
 )
+from botdca.strategy_version import STRATEGY_VERSIONS
 
 settings = get_settings()
 runtime = BotRuntime(settings)
@@ -58,13 +74,24 @@ class StrategySlotSubmission(BaseModel):
     enabled: bool
     symbol: str = Field(min_length=6, max_length=32)
     initial_margin_usdt: float = Field(gt=0, le=1_000_000)
+    #: Optional. Defaults preserve the previous fixed-margin behaviour.
+    sizing_mode: str = Field(default=str(SizingMode.FIXED_MARGIN_USDT), max_length=32)
+    sizing_value: float | None = Field(default=None, gt=0, le=1_000_000)
+    strategy_version_id: str | None = Field(default=None, max_length=64)
 
 
 class StrategySlotsSubmission(BaseModel):
     slots: list[StrategySlotSubmission] = Field(min_length=3, max_length=3)
 
 
+class ActivationSubmission(BaseModel):
+    status: str = Field(max_length=32)
+
+
 def _make_runtimes(slots: tuple[StrategySlot, ...]) -> dict[str, BotRuntime]:
+    # One lock shared by every symbol. It is the same critical section the
+    # portfolio coordinator authorizes inside, so no two symbols can read the
+    # account and submit against it concurrently.
     portfolio_lock = RLock()
     return {
         slot.symbol: BotRuntime(
@@ -72,6 +99,8 @@ def _make_runtimes(slots: tuple[StrategySlot, ...]) -> dict[str, BotRuntime]:
             symbol=slot.symbol,
             base_margin_usdt=slot.base_margin_usdt,
             lock=portfolio_lock,
+            allocation=slot.allocation,
+            strategy_version_id=slot.strategy_version_id,
         )
         for slot in enabled_strategy_slots(slots)
     }
@@ -82,6 +111,8 @@ async def lifespan(app: FastAPI):
     deployments: list[LiveWorkerDeployment] = []
     app.state.live_worker = None
     app.state.live_workers = {}
+    app.state.portfolio_coordinator = None
+    app.state.alert_dispatcher = None
     app.state.event_store = None
     app.state.journal_database = None
     app.state.strategy_slot_store = None
@@ -115,16 +146,46 @@ async def lifespan(app: FastAPI):
         if errors:
             raise RuntimeError("Live configuration blocked: " + " ".join(errors))
     if settings.bot_start_live_worker:
+        # A configuration must be explicitly approved for this exchange
+        # environment before any worker starts. Saving a strategy is never
+        # enough, and mainnet needs the operator preflight as well.
+        gate = ActivationGate(
+            status=min(
+                (slot.activation_status for slot in enabled_strategy_slots(slots)),
+                key=activation_rank,
+                default=ActivationStatus.DRAFT,
+            ),
+            testnet=settings.bybit_testnet,
+            mainnet_preflight_approved=settings.bot_mainnet_preflight_approved,
+        )
+        if not gate.allowed:
+            raise RuntimeError("Live worker startup blocked: " + " ".join(gate.errors()))
         try:
-            for symbol, configured_runtime in app.state.strategy_runtimes.items():
-                deployment = build_live_worker_deployment(settings, configured_runtime)
+            # ONE coordinator and ONE alert dispatcher for the whole process.
+            # A coordinator per symbol would only ever see its own exposure, so
+            # the portfolio guards would never bound the portfolio.
+            runtimes = app.state.strategy_runtimes
+            coordinator = None
+            dispatcher = None
+            for symbol, configured_runtime in runtimes.items():
+                deployment = build_live_worker_deployment(
+                    settings,
+                    configured_runtime,
+                    coordinator=coordinator,
+                    alerts=dispatcher,
+                )
+                service = getattr(deployment.worker, "service", None)
+                coordinator = coordinator or getattr(service, "coordinator", None)
+                dispatcher = dispatcher or getattr(service, "alerts", None)
                 deployment.start()
                 deployments.append(deployment)
                 app.state.live_workers[symbol] = deployment.worker
+            app.state.portfolio_coordinator = coordinator
+            app.state.alert_dispatcher = dispatcher
             app.state.live_worker = next(iter(app.state.live_workers.values()), None)
             if app.state.live_worker is not None:
-                service = getattr(app.state.live_worker, "service", None)
-                app.state.event_store = getattr(service, "store", app.state.event_store)
+                primary = getattr(app.state.live_worker, "service", None)
+                app.state.event_store = getattr(primary, "store", app.state.event_store)
         except Exception:
             for deployment in reversed(deployments):
                 deployment.stop()
@@ -136,6 +197,8 @@ async def lifespan(app: FastAPI):
             deployment.stop()
         app.state.live_worker = None
         app.state.live_workers = {}
+        app.state.portfolio_coordinator = None
+        app.state.alert_dispatcher = None
         database = getattr(app.state, "journal_database", None)
         if database is not None:
             database.engine.dispose()
@@ -329,6 +392,12 @@ def _worker_status(symbol: str | None = None):
         "fresh": fresh,
         "last_error": getattr(worker, "last_error", None),
         "last_sync_status": getattr(result, "status", None),
+        "max_dca_reached": bool(getattr(result, "max_dca_reached", False)),
+        "manual_intervention_required": bool(
+            getattr(result, "manual_intervention_required", False)
+        ),
+        "protection_status": getattr(result, "protection_status", None),
+        "strategy_version_id": getattr(result, "strategy_version_id", None),
     }
 
 
@@ -366,6 +435,7 @@ def operations_status():
             "execution_count": store.execution_count_for_symbols(symbols),
             "executions": store.recent_executions_for_symbols(symbols),
             "events": store.recent_events_for_symbols(symbols),
+            "alerts": store.recent_alerts(symbols, limit=25),
         }
     except Exception:  # noqa: BLE001 - isolate journal failures from other status sources
         journal["error"] = "Execution journal unavailable. Check the database service."
@@ -388,6 +458,20 @@ def operations_status():
         for status in worker_statuses.values()
     )
     configuration_errors = _portfolio_live_configuration_errors()
+    activation = _activation_gate(_strategy_slots())
+    portfolio_guards = _primary_runtime().portfolio_guards
+    portfolio = _portfolio_snapshot()
+    open_critical = []
+    if journal["available"]:
+        try:
+            open_critical = store.open_alert_conditions(symbols)
+        except Exception:  # noqa: BLE001 - alert readout never blocks operations
+            open_critical = []
+    intervention = [
+        symbol
+        for symbol, status in worker_statuses.items()
+        if status.get("manual_intervention_required")
+    ]
     checks = [
         {
             "label": "Operator controls",
@@ -420,9 +504,41 @@ def operations_status():
             "detail": " ".join(configuration_errors)
             or "Configuration checks passed; exchange validation is separate.",
         },
+        {
+            "label": "Strategy activation",
+            "passed": activation.allowed,
+            "detail": " ".join(activation.errors())
+            or f"Configuration is {activation.status} for the {'testnet' if settings.bybit_testnet else 'mainnet'} environment.",
+        },
+        {
+            "label": "Position protection",
+            "passed": not intervention and "missing_take_profit" not in open_critical,
+            "detail": (
+                f"Manual intervention required for: {', '.join(intervention)}."
+                if intervention
+                else "Every open bot position must hold a valid exchange-hosted take profit."
+            ),
+        },
+        {
+            "label": "Portfolio budget",
+            "passed": portfolio.total_margin_usdt
+            <= portfolio_guards.max_total_bot_margin_usdt,
+            "detail": (
+                f"{portfolio.total_margin_usdt:.2f} of "
+                f"{portfolio_guards.max_total_bot_margin_usdt:.2f} USDT committed across "
+                f"{len(portfolio.exposures)} symbol(s); "
+                f"{portfolio.deep_basket_count(portfolio_guards.deep_dca_level)} deep."
+            ),
+        },
     ]
     can_resume_live = all(c["passed"] for c in checks) and all(
-        status["last_sync_status"] not in {"waiting_for_reconciliation", "entry_blocked"}
+        status["last_sync_status"]
+        not in {
+            "waiting_for_reconciliation",
+            "entry_blocked",
+            "max_dca_reached",
+            "protection_ambiguous",
+        }
         for status in worker_statuses.values()
     )
     bot_snapshots = [asdict(configured_runtime.snapshot()) for configured_runtime in runtimes.values()]
@@ -438,6 +554,14 @@ def operations_status():
         "workers": worker_statuses,
         "journal": journal,
         "configuration": _configuration_snapshot(),
+        "portfolio": portfolio.describe(portfolio_guards.deep_dca_level),
+        "portfolio_guards": asdict(portfolio_guards),
+        "activation": activation.describe(),
+        "open_critical_alerts": open_critical,
+        "strategy_versions": {
+            version_id: version.describe()
+            for version_id, version in sorted(STRATEGY_VERSIONS.items())
+        },
         "readiness": checks,
         "can_resume": bool(settings.bot_operator_token)
         and journal["available"]
@@ -650,19 +774,45 @@ def store_strategy_slots(payload: StrategySlotsSubmission) -> dict:
     if any(configured_runtime.snapshot().position_qty > 0 for configured_runtime in _strategy_runtimes().values()):
         raise HTTPException(409, "Close or reconcile every open basket before changing strategy slots.")
 
-    candidates = [
-        StrategySlot(
-            slot=item.slot,
-            enabled=item.enabled,
-            symbol=item.symbol,
-            base_margin_usdt=item.initial_margin_usdt,
-        )
-        for item in payload.slots
-    ]
+    try:
+        candidates = [
+            StrategySlot(
+                slot=item.slot,
+                enabled=item.enabled,
+                symbol=item.symbol,
+                base_margin_usdt=item.initial_margin_usdt,
+                sizing_mode=SizingMode(item.sizing_mode),
+                sizing_value=item.sizing_value,
+                strategy_version_id=(
+                    item.strategy_version_id or settings.bot_strategy_version_id
+                ),
+                # Any edit to the traded parameters returns the configuration to
+                # DRAFT. Saving can never make a strategy mainnet-live.
+                activation_status=ActivationStatus.DRAFT,
+            )
+            for item in payload.slots
+        ]
+    except ValueError as exc:
+        raise HTTPException(422, f"Unsupported sizing mode: {exc}") from exc
     try:
         validated = validate_strategy_slots(candidates)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+    enabled = enabled_strategy_slots(validated)
+    if len(enabled) > settings.effective_max_active_symbols:
+        raise HTTPException(
+            409,
+            f"Trial mode allows at most {settings.effective_max_active_symbols} active "
+            f"symbol(s); {len(enabled)} are enabled.",
+        )
+    versions = {slot.strategy_version_id for slot in enabled}
+    if len(versions) > 1:
+        raise HTTPException(
+            422,
+            "Enabled slots must share one strategy-family version. "
+            f"Found: {', '.join(sorted(versions))}.",
+        )
 
     instrument_client = BybitInstrumentClient(testnet=settings.bybit_testnet)
     try:
@@ -783,3 +933,264 @@ def manual_close_configured_bot(symbol: str | None) -> dict:
     except BybitApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return asdict(result)
+
+
+def _symbol_forecasts(reference_prices: dict[str, float] | None = None) -> dict:
+    """Ladder forecasts for every enabled slot, research levels flagged."""
+    forecasts = {}
+    prices = reference_prices or {}
+    for slot in enabled_strategy_slots(_strategy_slots()):
+        version = STRATEGY_VERSIONS.get(slot.strategy_version_id)
+        if version is None:
+            continue
+        forecasts[slot.symbol] = forecast_symbol(
+            symbol=slot.symbol,
+            version=version,
+            allocation=slot.allocation,
+            reference_price=prices.get(slot.symbol, 100.0),
+        )
+    return forecasts
+
+
+def _live_reference_prices() -> dict[str, float]:
+    if not (settings.bybit_api_key and settings.bybit_api_secret):
+        return {}
+    try:
+        exchange = _bybit_exchange(live_trading=False)
+        return {symbol: exchange.get_last_price(symbol) for symbol in _strategy_runtimes()}
+    except Exception:  # noqa: BLE001 - a forecast must still render without the exchange
+        return {}
+
+
+@app.get("/api/v1/strategy/versions")
+def strategy_versions() -> dict:
+    """Every known strategy version, with the live and research ladders separated."""
+    return {
+        "configured_version_id": settings.bot_strategy_version_id,
+        "versions": {
+            version_id: version.describe()
+            for version_id, version in sorted(STRATEGY_VERSIONS.items())
+        },
+        "research_ladder_notice": (
+            "Research-only DCA levels are never traded by the live runtime. They exist "
+            "for historical comparison, capital forecasting and stress testing."
+        ),
+    }
+
+
+@app.get("/api/v1/strategy/forecast")
+def strategy_forecast() -> dict:
+    """Per-symbol ladder forecasts plus combined portfolio scenarios and stress."""
+    prices = _live_reference_prices()
+    forecasts = _symbol_forecasts(prices)
+    if not forecasts:
+        raise HTTPException(503, "No enabled symbol has a resolvable strategy version.")
+
+    equity = None
+    try:
+        account = account_status()
+        equity = (account.get("account") or {}).get("total_equity_usd")
+    except Exception:  # noqa: BLE001 - forecasts never depend on a live account read
+        equity = settings.bot_trial_equity_usdt
+
+    max_live = min(
+        version.max_live_dca_level
+        for version in (
+            STRATEGY_VERSIONS[slot.strategy_version_id]
+            for slot in enabled_strategy_slots(_strategy_slots())
+            if slot.strategy_version_id in STRATEGY_VERSIONS
+        )
+    )
+    max_live = min(max_live, settings.effective_max_dca_level)
+    worst = worst_case_scenario(
+        forecasts, max_live_dca_level=max_live, account_equity_usdt=equity
+    )
+    return {
+        "reference_prices": prices,
+        "reference_price_source": "exchange" if prices else "normalized (100.0)",
+        "account_equity_usdt": equity,
+        "max_live_dca_level": max_live,
+        "symbols": {s: f.describe() for s, f in sorted(forecasts.items())},
+        "scenarios": [
+            scenario.describe()
+            for scenario in portfolio_scenarios(
+                forecasts, max_live_dca_level=max_live, account_equity_usdt=equity
+            )
+        ],
+        "worst_case": worst.describe() if worst is not None else None,
+        "research_expansion": research_expansion(forecasts, max_live_dca_level=max_live),
+        "disclaimer": (
+            "EXPERIMENTAL reconstruction. Forecasts are an APPROXIMATE STRESS MODEL, "
+            "NOT AN EXACT BYBIT UTA LIQUIDATION CALCULATION."
+        ),
+    }
+
+
+def _portfolio_snapshot() -> PortfolioSnapshot:
+    """Aggregate bot exposure across every enabled symbol."""
+    exposures = []
+    for symbol, configured_runtime in _strategy_runtimes().items():
+        snapshot = configured_runtime.snapshot()
+        notional = (snapshot.average_entry or 0.0) * snapshot.position_qty
+        exposures.append(
+            SymbolExposure(
+                symbol=symbol,
+                dca_level=snapshot.dca_level,
+                position_qty=snapshot.position_qty,
+                margin_usdt=snapshot.committed_margin_usdt,
+                notional_usdt=notional,
+                strategy_version_id=snapshot.strategy_version_id,
+                max_dca_reached=snapshot.max_dca_reached,
+            )
+        )
+    account = None
+    if settings.bybit_api_key and settings.bybit_api_secret:
+        try:
+            account = _bybit_exchange(live_trading=False).get_account_snapshot()
+        except Exception:  # noqa: BLE001 - never disclose credential-bearing errors
+            account = None
+    return PortfolioSnapshot(
+        account=account,
+        exposures=tuple(exposures),
+        reserved_margin_usdt=0.0,
+        reserved_notional_usdt=0.0,
+    )
+
+
+@app.get("/api/v1/portfolio")
+def portfolio_status() -> dict:
+    """Account-level exposure and the guards it is evaluated against."""
+    guards = _primary_runtime().portfolio_guards
+    snapshot = _portfolio_snapshot()
+    return {
+        "guards": asdict(guards),
+        "snapshot": snapshot.describe(guards.deep_dca_level),
+        "trial_mode": {
+            "enabled": settings.bot_trial_mode,
+            "max_active_symbols": settings.effective_max_active_symbols,
+            "max_dca_level": settings.effective_max_dca_level,
+            "max_portfolio_margin_usdt": settings.effective_max_total_bot_margin_usdt,
+            "manual_resume_after_restart": settings.bot_trial_manual_resume_after_restart,
+        },
+        "note": (
+            "Every enabled symbol draws on one Bybit Unified Account. Guards are "
+            "evaluated across the portfolio, never per symbol."
+        ),
+    }
+
+
+@app.get("/api/v1/accounting")
+def accounting_status() -> dict:
+    """Attributed strategy P&L. Never inferred from wallet-balance change."""
+    store = _event_store()
+    symbols = tuple(_strategy_runtimes())
+    executions = store.recent_executions_for_symbols(symbols, limit=10000)
+
+    transaction_log = None
+    truncated = False
+    if settings.bybit_api_key and settings.bybit_api_secret:
+        try:
+            transaction_log, truncated = _bybit_exchange(
+                live_trading=False
+            ).get_transaction_log(limit=100, max_pages=5)
+        except Exception:  # noqa: BLE001 - accounting still renders without funding
+            transaction_log = None
+
+    accounting = build_accounting(
+        executions=executions,
+        transaction_log=transaction_log,
+        tracked_symbols=symbols,
+        window_truncated=truncated,
+    )
+    return accounting.describe()
+
+
+@app.get("/api/v1/alerts")
+def alerts_status(limit: int = 50) -> dict:
+    store = _event_store()
+    symbols = tuple(_strategy_runtimes())
+    return {
+        "alerts": store.recent_alerts(symbols, limit=min(max(limit, 1), 200)),
+        "open_critical_conditions": store.open_alert_conditions(symbols),
+        "webhook_configured": bool(settings.bot_alert_webhook_url),
+        "dedupe_seconds": settings.bot_alert_dedupe_seconds,
+    }
+
+
+def _activation_gate(slots: tuple[StrategySlot, ...]) -> ActivationGate:
+    # The portfolio is only as approved as its least-approved enabled slot.
+    weakest = min(
+        (slot.activation_status for slot in enabled_strategy_slots(slots)),
+        key=activation_rank,
+        default=ActivationStatus.DRAFT,
+    )
+    return ActivationGate(
+        status=weakest,
+        testnet=settings.bybit_testnet,
+        mainnet_preflight_approved=settings.bot_mainnet_preflight_approved,
+    )
+
+
+@app.get("/api/v1/configuration/activation")
+def activation_status() -> dict:
+    slots = _strategy_slots()
+    return {
+        "gate": _activation_gate(slots).describe(),
+        "slots": {
+            str(slot.slot): {
+                "symbol": slot.symbol,
+                "enabled": slot.enabled,
+                "activation_status": str(slot.activation_status),
+            }
+            for slot in slots
+        },
+        "lifecycle": [
+            "draft",
+            "validated",
+            "approved_for_testnet",
+            "approved_for_mainnet_trial",
+            "retired",
+        ],
+    }
+
+
+@app.put("/api/v1/configuration/activation")
+def advance_activation(payload: ActivationSubmission) -> dict:
+    """Advance activation one step. Never a shortcut to mainnet."""
+    if _workers_running():
+        raise HTTPException(409, "Stop all live workers before changing activation.")
+    try:
+        target = ActivationStatus(payload.status)
+    except ValueError as exc:
+        raise HTTPException(422, f"Unknown activation status: {payload.status}") from exc
+
+    slots = _strategy_slots()
+    updated = []
+    for slot in slots:
+        if not slot.enabled:
+            updated.append(slot)
+            continue
+        try:
+            new_status = require_transition(slot.activation_status, target)
+        except Exception as exc:
+            raise HTTPException(409, str(exc)) from exc
+        updated.append(
+            StrategySlot(
+                slot=slot.slot,
+                enabled=slot.enabled,
+                symbol=slot.symbol,
+                base_margin_usdt=slot.base_margin_usdt,
+                sizing_mode=slot.sizing_mode,
+                sizing_value=slot.sizing_value,
+                strategy_version_id=slot.strategy_version_id,
+                activation_status=new_status,
+            )
+        )
+
+    store = getattr(app.state, "strategy_slot_store", None)
+    if store is None:
+        raise HTTPException(503, "Activation could not be saved. Check the database service.")
+    saved = store.replace(updated)
+    app.state.strategy_slots = saved
+    _audit_action("STRATEGY_ACTIVATION_CHANGED")
+    return activation_status()

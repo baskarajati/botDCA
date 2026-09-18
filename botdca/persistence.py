@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from botdca.bybit_events import ExecutionEvent, OrderEvent, PositionEvent
 from botdca.database import (
+    AlertRecord,
     Database,
     ExecutionRecord,
     OrderStateRecord,
@@ -137,6 +138,73 @@ class EventStore:
             session.commit()
             session.refresh(record)
             return record.id
+
+    def record_alert(
+        self,
+        *,
+        condition: str,
+        severity: str,
+        symbol: str,
+        message: str,
+        dedupe_key: str,
+        cycle_id: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> int:
+        record = AlertRecord(
+            condition=condition,
+            severity=severity,
+            symbol=symbol.upper(),
+            cycle_id=cycle_id,
+            dedupe_key=dedupe_key,
+            message=message[:512],
+            context=context or {},
+        )
+        with self.database.session_factory() as session:
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return record.id
+
+    def recent_alerts(
+        self,
+        symbols: list[str] | tuple[str, ...] | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        statement = select(AlertRecord).order_by(desc(AlertRecord.id)).limit(limit)
+        if symbols:
+            statement = (
+                select(AlertRecord)
+                .where(AlertRecord.symbol.in_([s.upper() for s in symbols]))
+                .order_by(desc(AlertRecord.id))
+                .limit(limit)
+            )
+        with self.database.session_factory() as session:
+            return [
+                {
+                    "id": row.id,
+                    "occurred_at": row.occurred_at.isoformat(),
+                    "condition": row.condition,
+                    "severity": row.severity,
+                    "symbol": row.symbol,
+                    "cycle_id": row.cycle_id,
+                    "message": row.message,
+                    "context": row.context,
+                    "acknowledged": row.acknowledged,
+                }
+                for row in session.scalars(statement)
+            ]
+
+    def open_alert_conditions(
+        self, symbols: list[str] | tuple[str, ...] | None = None, limit: int = 200
+    ) -> list[str]:
+        """Distinct unacknowledged critical conditions, for readiness reporting."""
+        return sorted(
+            {
+                row["condition"]
+                for row in self.recent_alerts(symbols, limit=limit)
+                if row["severity"] == "critical" and not row["acknowledged"]
+            }
+        )
 
     def latest_position(self, symbol: str) -> PositionSnapshotRecord | None:
         statement = (

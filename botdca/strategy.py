@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from botdca.domain import DEFAULT_DCA_STEPS, BotState, DcaStep, Fill, TradingCycle
+from botdca.sizing import InitialAllocation, SizingMode
+from botdca.strategy_version import StrategyVersion, live_dca_steps_for
 
 
 @dataclass
@@ -13,6 +15,44 @@ class StrategyConfig:
     base_margin_usdt: float = 1.0
     tp_percent: float = 1.09
     dca_steps: tuple[DcaStep, ...] = DEFAULT_DCA_STEPS
+    #: Identity of the immutable strategy version these parameters came from.
+    #: A basket opened under this config is pinned to it for its whole life.
+    strategy_version_id: str | None = None
+    #: How this symbol's initial order is sized. Defaults to the historical
+    #: fixed-margin behaviour so existing configurations keep working.
+    allocation: InitialAllocation | None = None
+
+    @property
+    def initial_allocation(self) -> InitialAllocation:
+        if self.allocation is not None:
+            return self.allocation
+        return InitialAllocation(SizingMode.FIXED_MARGIN_USDT, self.base_margin_usdt)
+
+
+def strategy_config_from_version(
+    version: StrategyVersion,
+    *,
+    symbol: str,
+    allocation: InitialAllocation,
+) -> StrategyConfig:
+    """Build a runtime config from an immutable strategy version.
+
+    Only the version's LIVE ladder is ever installed. Research-only levels are
+    not reachable from anything this function returns.
+    """
+    return StrategyConfig(
+        symbol=symbol.upper(),
+        leverage=version.leverage,
+        base_margin_usdt=(
+            allocation.value
+            if allocation.mode is SizingMode.FIXED_MARGIN_USDT
+            else 0.0
+        ),
+        tp_percent=version.take_profit_percent,
+        dca_steps=live_dca_steps_for(version),
+        strategy_version_id=version.version_id,
+        allocation=allocation,
+    )
 
 
 class DcaTriggerReference(StrEnum):
@@ -44,21 +84,34 @@ class DcaStrategy:
         self.reentry_enabled = False
         self.state = BotState.PAUSED
 
-    def begin_cycle(self, fill_price: float) -> TradingCycle:
+    def _new_cycle(self, **overrides) -> TradingCycle:
+        """Create a basket pinned to the strategy version currently configured."""
+        return TradingCycle(
+            symbol=self.config.symbol,
+            leverage=self.config.leverage,
+            base_margin_usdt=self.config.base_margin_usdt,
+            tp_percent=self.config.tp_percent,
+            strategy_version_id=self.config.strategy_version_id,
+            max_dca_level=len(self.config.dca_steps),
+            **overrides,
+        )
+
+    def begin_cycle(self, fill_price: float, qty: float | None = None) -> TradingCycle:
         if self.state != BotState.IDLE or not self.reentry_enabled:
             raise RuntimeError(f"cannot begin cycle from state={self.state}")
         if fill_price <= 0:
             raise ValueError("fill_price must be positive")
 
-        cycle = TradingCycle(
-            symbol=self.config.symbol,
-            leverage=self.config.leverage,
-            base_margin_usdt=self.config.base_margin_usdt,
-            tp_percent=self.config.tp_percent,
-        )
-        initial_notional = self.config.base_margin_usdt * self.config.leverage
-        initial_qty = initial_notional / fill_price
-        cycle.fills.append(Fill(price=fill_price, qty=initial_qty, kind="initial"))
+        cycle = self._new_cycle()
+        if qty is None:
+            allocation = self.config.initial_allocation
+            if allocation.mode is SizingMode.FIXED_BASE_QUANTITY:
+                qty = allocation.value
+            else:
+                qty = allocation.value * self.config.leverage / fill_price
+        if qty <= 0:
+            raise ValueError("initial qty must be positive")
+        cycle.fills.append(Fill(price=fill_price, qty=qty, kind="initial"))
         self.current_cycle = cycle
         self.state = BotState.ACTIVE
         return cycle
@@ -71,6 +124,7 @@ class DcaStrategy:
         dca_level: int,
         last_order_qty: float,
         cycle_id: str | None = None,
+        strategy_version_id: str | None = None,
     ) -> TradingCycle:
         if average_entry <= 0 or total_qty <= 0 or last_order_qty <= 0:
             raise ValueError("restored position values must be positive")
@@ -81,16 +135,16 @@ class DcaStrategy:
                 "non-average trigger references require individual restored fill history"
             )
 
-        cycle = TradingCycle(
-            symbol=self.config.symbol,
-            leverage=self.config.leverage,
-            base_margin_usdt=self.config.base_margin_usdt,
-            tp_percent=self.config.tp_percent,
+        cycle = self._new_cycle(
             dca_level_override=dca_level,
             last_order_qty_override=last_order_qty,
         )
         if cycle_id is not None:
             cycle.id = cycle_id
+        if strategy_version_id is not None:
+            # A recovered basket keeps the version it was opened under, even if
+            # the configured version has moved on since.
+            cycle.strategy_version_id = strategy_version_id
         cycle.fills.append(Fill(price=average_entry, qty=total_qty, kind="restored"))
         self.current_cycle = cycle
         self.state = BotState.ACTIVE if self.reentry_enabled else BotState.PAUSED

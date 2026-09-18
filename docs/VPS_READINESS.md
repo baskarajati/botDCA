@@ -47,6 +47,32 @@ Before writing to the VPS:
 7. Validate and encrypt the restricted Bybit key through the UI; place no order.
 8. Restart once and prove encrypted credential recovery while the worker remains stopped.
 
+### Additional gates introduced by PR #4
+
+9. Confirm the schema upgrade ran. `Database.create_schema()` now also applies an
+   additive migration, because `create_all` never alters an existing table. It
+   adds `sizing_mode`, `sizing_value`, `strategy_version_id` and
+   `activation_status` to `strategy_slots`, and creates the `alerts` table.
+   Nothing is dropped, renamed or retyped, so an existing deployment upgrades in
+   place with its configuration and journal history intact. The migration is
+   idempotent; a second start is a no-op.
+10. Confirm every enabled slot references the same strategy version. A
+    mixed-version portfolio is refused when saved.
+11. Confirm the portfolio guards are set for the intended account size.
+    `BOT_MAX_TOTAL_BOT_MARGIN_USDT` bounds the whole bot, not one coin, and is
+    the guard that matters when several coins escalate together.
+12. Confirm the activation status. A saved configuration starts at `DRAFT`;
+    mainnet requires `APPROVED_FOR_MAINNET_TRIAL` **and**
+    `BOT_MAINNET_PREFLIGHT_APPROVED=true`.
+13. If `BOT_TRIAL_MODE=true`, confirm the trial caps. They only tighten limits,
+    so verify the resulting effective ladder depth and portfolio margin cap are
+    the intended ones, not merely the defaults.
+14. If `BOT_ALERT_WEBHOOK_URL` is set, confirm the endpoint is reachable from the
+    VPS and that it is an operator-controlled destination. Alert bodies contain
+    symbols, DCA depths and portfolio figures, and never contain credentials.
+15. Run the optional Bybit testnet lifecycle harness before any funded order.
+    It is excluded from CI and refuses to run outside testnet/demo.
+
 ## Deployment result
 
 On 2026-09-18 the operator explicitly retired Crypto Quant and authorized this
@@ -73,3 +99,11 @@ HTTP exposure was added as a workaround.
 
 Funded activation is a later, separately approved operation. It requires a fresh
 account/position/order check and explicit approval of the exact configuration.
+
+PR #4 does not change that. It adds the versioned GreenSynergy strategy family,
+per-symbol allocation, atomic portfolio authorization, explicit max-DCA
+behaviour, the position-protection invariant, accounting, alerts and the
+activation lifecycle, while keeping `BOT_LIVE_TRADING`, `BOT_START_LIVE_WORKER`
+and `BOT_MAINNET_PREFLIGHT_APPROVED` false by default. The reconstructed
+GreenSynergy strategy remains EXPERIMENTAL and is not claimed to be validated,
+optimal or profitable.

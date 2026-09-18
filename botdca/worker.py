@@ -6,6 +6,7 @@ from threading import Event, Lock, Thread
 from time import monotonic, time
 from typing import Protocol
 
+from botdca.alerts import Alert, AlertCondition, AlertDispatcher, AlertSeverity
 from botdca.live_service import LiveStrategyService, LiveSyncResult
 from botdca.persistence import EventStore
 
@@ -33,9 +34,11 @@ class LiveWorker:
         store: EventStore,
         interval_seconds: float = 2.0,
         execution_recovery: Callable[[], None] | None = None,
+        alerts: AlertDispatcher | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive")
+        self.alerts = alerts or AlertDispatcher()
         self.service = service
         self.stream = stream
         self.store = store
@@ -48,6 +51,7 @@ class LiveWorker:
         self.last_success_at_ms: int | None = None
         self.execution_recovery = execution_recovery
         self._last_recovery_at: float | None = None
+        self._stream_alerted = False
 
     @property
     def running(self) -> bool:
@@ -57,6 +61,11 @@ class LiveWorker:
     def run_once(self) -> LiveSyncResult:
         reconnected = not self.stream.connected
         if not self.stream.connected:
+            self._alert(
+                AlertCondition.PRIVATE_STREAM_DISCONNECTED,
+                AlertSeverity.CRITICAL,
+                f"{self.service.symbol} private stream is disconnected; reconnecting",
+            )
             self.stream.stop()
             self.stream.start()
             self.store.record_strategy_event(
@@ -64,6 +73,14 @@ class LiveWorker:
                 symbol=self.service.symbol,
                 payload={},
             )
+            self._stream_alerted = True
+        elif self._stream_alerted:
+            # Only clear a disconnect we actually raised, so the healthy path
+            # does no work at all.
+            self.alerts.clear(
+                AlertCondition.PRIVATE_STREAM_DISCONNECTED, self.service.symbol
+            )
+            self._stream_alerted = False
         if self.execution_recovery is not None and (
             reconnected
             or self._last_recovery_at is None
@@ -85,7 +102,36 @@ class LiveWorker:
             payload=asdict(result),
         )
         self.last_success_at_ms = int(time() * 1000)
+        self.alerts.clear(AlertCondition.WORKER_CRASHED, self.service.symbol)
         return result
+
+    def _alert(
+        self,
+        condition: AlertCondition,
+        severity: AlertSeverity,
+        message: str,
+        **context: object,
+    ) -> None:
+        cycle = self.service.strategy.current_cycle
+        self.alerts.dispatch(
+            Alert(
+                condition=condition,
+                severity=severity,
+                symbol=self.service.symbol,
+                message=message,
+                cycle_id=cycle.id if cycle is not None else None,
+                context=dict(context),
+            )
+        )
+
+    @property
+    def stale(self) -> bool:
+        """No successful reconciliation within three worker intervals."""
+        if self.last_success_at_ms is None:
+            return self.running
+        return time() * 1000 - self.last_success_at_ms > max(
+            15000.0, self.interval_seconds * 3000
+        )
 
     def start(self) -> None:
         with self._lock:
@@ -114,6 +160,13 @@ class LiveWorker:
             except Exception as exc:  # noqa: BLE001 - daemon safety boundary must fail closed
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 self.service.strategy.pause()
+                self._alert(
+                    AlertCondition.WORKER_CRASHED,
+                    AlertSeverity.CRITICAL,
+                    f"{self.service.symbol} worker failed and paused re-entry: "
+                    f"{self.last_error}",
+                    error=self.last_error,
+                )
                 self.store.record_strategy_event(
                     event_type="LIVE_SYNC_ERROR",
                     symbol=self.service.symbol,
