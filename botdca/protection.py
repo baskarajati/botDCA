@@ -147,3 +147,15 @@ def repaired(assessment: ProtectionAssessment, detail: str) -> ProtectionAssessm
         resting_tp_orders=1,
         detail=detail,
     )
+
+
+def installed(assessment: ProtectionAssessment, detail: str) -> ProtectionAssessment:
+    """Mark an assessment protected after the routine first TP of a basket was placed."""
+    return ProtectionAssessment(
+        status=ProtectionStatus.PROTECTED,
+        symbol=assessment.symbol,
+        position_qty=assessment.position_qty,
+        protected_qty=assessment.position_qty,
+        resting_tp_orders=1,
+        detail=detail,
+    )

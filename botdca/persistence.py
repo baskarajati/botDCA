@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from hashlib import sha256
 from math import isfinite
 from typing import Any
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from botdca.bybit_events import ExecutionEvent, OrderEvent, PositionEvent
@@ -190,6 +191,7 @@ class EventStore:
                     "message": row.message,
                     "context": row.context,
                     "acknowledged": row.acknowledged,
+                    "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
                 }
                 for row in session.scalars(statement)
             ]
@@ -197,14 +199,61 @@ class EventStore:
     def open_alert_conditions(
         self, symbols: list[str] | tuple[str, ...] | None = None, limit: int = 200
     ) -> list[str]:
-        """Distinct unacknowledged critical conditions, for readiness reporting."""
+        """Distinct critical conditions still open, for readiness reporting.
+
+        An alert stops being open when the runtime observes its condition clear
+        (``resolved_at``) or when the operator acknowledges it.
+        """
         return sorted(
             {
                 row["condition"]
                 for row in self.recent_alerts(symbols, limit=limit)
-                if row["severity"] == "critical" and not row["acknowledged"]
+                if row["severity"] == "critical"
+                and not row["acknowledged"]
+                and row["resolved_at"] is None
             }
         )
+
+    def resolve_alerts(
+        self, *, condition: str, symbol: str, cycle_id: str | None = None
+    ) -> int:
+        """Mark open alerts for a condition resolved. No cycle means every cycle."""
+        statement = (
+            update(AlertRecord)
+            .where(
+                AlertRecord.condition == condition,
+                AlertRecord.symbol == symbol.upper(),
+                AlertRecord.resolved_at.is_(None),
+            )
+            .values(resolved_at=datetime.now(UTC))
+        )
+        if cycle_id is not None:
+            statement = statement.where(AlertRecord.cycle_id == cycle_id)
+        with self.database.session_factory() as session:
+            result = session.execute(statement)
+            session.commit()
+            return result.rowcount or 0
+
+    def acknowledge_alerts(
+        self,
+        *,
+        symbols: list[str] | tuple[str, ...] | None = None,
+        conditions: list[str] | tuple[str, ...] | None = None,
+    ) -> int:
+        """Operator acknowledgement of open alerts; they stay in the audit history."""
+        statement = (
+            update(AlertRecord)
+            .where(AlertRecord.acknowledged.is_(False))
+            .values(acknowledged=True)
+        )
+        if symbols:
+            statement = statement.where(AlertRecord.symbol.in_([s.upper() for s in symbols]))
+        if conditions:
+            statement = statement.where(AlertRecord.condition.in_(list(conditions)))
+        with self.database.session_factory() as session:
+            result = session.execute(statement)
+            session.commit()
+            return result.rowcount or 0
 
     def latest_position(self, symbol: str) -> PositionSnapshotRecord | None:
         statement = (

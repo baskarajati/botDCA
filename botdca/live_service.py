@@ -13,7 +13,13 @@ from botdca.order_identity import deterministic_order_link_id
 from botdca.order_plan import build_resting_order_plan, initial_market_qty
 from botdca.persistence import EventStore
 from botdca.portfolio import CandidateOrder, PortfolioCoordinator, SymbolExposure
-from botdca.protection import ProtectionStatus, assess_protection, repaired
+from botdca.protection import (
+    ProtectionAssessment,
+    ProtectionStatus,
+    assess_protection,
+    installed,
+    repaired,
+)
 from botdca.reconciliation import ReconciliationError, reconcile_strategy
 from botdca.risk import RiskLimits
 from botdca.strategy import DcaStrategy
@@ -60,9 +66,12 @@ class LiveStrategyService:
         coordinator: PortfolioCoordinator | None = None,
         alerts: AlertDispatcher | None = None,
         deep_dca_level: int = 5,
+        initial_tp_grace_seconds: float = 60.0,
     ) -> None:
         if reentry_delay_seconds < 0:
             raise ValueError("reentry_delay_seconds cannot be negative")
+        if initial_tp_grace_seconds < 0:
+            raise ValueError("initial_tp_grace_seconds cannot be negative")
         self.strategy = strategy
         self.exchange = exchange
         self.store = store
@@ -79,6 +88,12 @@ class LiveStrategyService:
         self.deep_dca_level = deep_dca_level
         self._flat_since: float | None = None
         self._last_alerted_depth: int = 0
+        # The take profit is placed on the first sync that sees the filled entry,
+        # so a missing TP right after this process submitted an entry is the
+        # normal install step, not lost protection. Held in memory on purpose:
+        # after a restart a missing TP is always treated as lost protection.
+        self.initial_tp_grace_seconds = initial_tp_grace_seconds
+        self._entry_submitted_at: float | None = None
 
     @property
     def symbol(self) -> str:
@@ -137,6 +152,14 @@ class LiveStrategyService:
             )
         )
 
+    def _initial_tp_pending(self, assessment: ProtectionAssessment) -> bool:
+        """True while the TP for an entry this process just submitted is not yet placed."""
+        if assessment.status is not ProtectionStatus.MISSING or assessment.resting_tp_orders:
+            return False
+        if self._entry_submitted_at is None:
+            return False
+        return self.clock() - self._entry_submitted_at <= self.initial_tp_grace_seconds
+
     def _alert_depth(self) -> None:
         """Alert once as a basket crosses each deep DCA threshold."""
         cycle = self.strategy.current_cycle
@@ -165,6 +188,13 @@ class LiveStrategyService:
         return self._sync_flat_position(position)
 
     def _sync_flat_position(self, position: PositionSnapshot) -> LiveSyncResult:
+        # None of these conditions can hold without an open position.
+        for condition in (
+            AlertCondition.MISSING_TAKE_PROFIT,
+            AlertCondition.MAX_DCA_REACHED,
+            AlertCondition.RECONCILIATION_FAILED,
+        ):
+            self.alerts.clear(condition, self.symbol)
         was_paused = self.strategy.state == BotState.PAUSED
         if self.strategy.current_cycle is not None:
             self.strategy.mark_closed(realized_pnl_usdt=0.0)
@@ -261,6 +291,7 @@ class LiveStrategyService:
             )
 
         self._flat_since = None
+        self._entry_submitted_at = self.clock()
         return LiveSyncResult(
             status="entry_submitted",
             position=position,
@@ -388,7 +419,15 @@ class LiveStrategyService:
                 strategy_version_id=self.strategy_version_id,
             )
 
-        if assessment.status is ProtectionStatus.MISSING:
+        installing_initial_tp = self._initial_tp_pending(assessment)
+        resizing_tp = (
+            assessment.status is ProtectionStatus.MISSING and assessment.resting_tp_orders == 1
+        )
+        if (
+            assessment.status is ProtectionStatus.MISSING
+            and not installing_initial_tp
+            and not resizing_tp
+        ):
             self._alert(
                 AlertCondition.MISSING_TAKE_PROFIT,
                 AlertSeverity.CRITICAL,
@@ -416,7 +455,26 @@ class LiveStrategyService:
                     plan.take_profit.price,
                 ),
             )
-            if assessment.status is ProtectionStatus.MISSING:
+            if installing_initial_tp:
+                self._entry_submitted_at = None
+                assessment = installed(
+                    assessment, "initial take profit installed after the entry filled"
+                )
+            elif resizing_tp:
+                # A DCA fill grew the position; the resting TP still covers the
+                # old quantity until this replacement lands.
+                assessment = repaired(
+                    assessment,
+                    f"take profit resized from {assessment.protected_qty} to "
+                    f"{plan.take_profit.qty} {self.symbol} after the position changed",
+                )
+                self._alert(
+                    AlertCondition.PROTECTION_REPAIRED,
+                    AlertSeverity.INFO,
+                    assessment.detail,
+                    **assessment.describe(),
+                )
+            elif assessment.status is ProtectionStatus.MISSING:
                 assessment = repaired(
                     assessment,
                     "protection was rebuilt after an open position was found without a "
@@ -431,6 +489,7 @@ class LiveStrategyService:
         else:
             tp = _ack(tp_match)
             if assessment.healthy:
+                self._entry_submitted_at = None
                 self.alerts.clear(AlertCondition.MISSING_TAKE_PROFIT, self.symbol, cycle.id)
         # Keep protection installed while replacing stale reduce-only exits.
         for order in tp_orders:
