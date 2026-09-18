@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from pybit.exceptions import InvalidRequestError
 
 from botdca.bybit_events import parse_execution_message, parse_position_message
-from botdca.bybit_exchange import BybitExchange
-from botdca.exchange import LiveTradingDisabled
+from botdca.bybit_exchange import BybitApiError, BybitExchange
+from botdca.exchange import LiveTradingDisabled, PositionAlreadyClosedError
 
 
 class FakeSession:
@@ -263,3 +264,55 @@ def test_uncertain_submit_recovers_by_stable_order_link_id() -> None:
     assert first == second
     assert first.order_id == "accepted-before-timeout"
     assert len(session.place_calls) == 1
+
+
+class PositionZeroSession(UncertainSubmitSession):
+    """Bybit raises for a reduce-only order against a position that just closed."""
+
+    def place_order(self, **kwargs):
+        self.place_calls.append(kwargs)
+        raise InvalidRequestError(
+            request="POST /v5/order/create",
+            message="current position is zero, cannot fix reduce-only order qty",
+            status_code=110017,
+            time="17:29:18",
+            resp_headers={},
+        )
+
+
+class PositionZeroCodeSession(UncertainSubmitSession):
+    """Bybit answers 200 and reports the same refusal in retCode."""
+
+    def place_order(self, **kwargs):
+        self.place_calls.append(kwargs)
+        return {
+            "retCode": 110017,
+            "retMsg": "current position is zero, cannot fix reduce-only order qty",
+            "result": {},
+        }
+
+
+def test_a_reduce_only_rejection_for_a_flat_position_is_its_own_error() -> None:
+    exchange = BybitExchange(session=PositionZeroSession(), live_trading=True)
+
+    with pytest.raises(PositionAlreadyClosedError):
+        exchange.place_tp_limit("HYPEUSDT", 0.06, 92.19, order_link_id="botdca-tp-race")
+
+
+def test_a_reduce_only_refusal_reported_in_retcode_is_the_same_error() -> None:
+    exchange = BybitExchange(session=PositionZeroCodeSession(), live_trading=True)
+
+    with pytest.raises(PositionAlreadyClosedError):
+        exchange.place_tp_limit("HYPEUSDT", 0.06, 92.19, order_link_id="botdca-tp-code")
+
+
+def test_another_rejection_keeps_its_own_type() -> None:
+    class InsufficientBalanceSession(UncertainSubmitSession):
+        def place_order(self, **kwargs):
+            self.place_calls.append(kwargs)
+            return {"retCode": 110007, "retMsg": "insufficient available balance", "result": {}}
+
+    exchange = BybitExchange(session=InsufficientBalanceSession(), live_trading=True)
+
+    with pytest.raises(BybitApiError):
+        exchange.place_tp_limit("HYPEUSDT", 0.06, 92.19, order_link_id="botdca-tp-poor")

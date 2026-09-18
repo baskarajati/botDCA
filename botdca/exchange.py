@@ -9,6 +9,10 @@ class LiveTradingDisabled(RuntimeError):
     """Raised when a mutating exchange action is attempted while live trading is off."""
 
 
+class PositionAlreadyClosedError(RuntimeError):
+    """The exchange refused a reduce-only order because the position is already flat."""
+
+
 @dataclass(frozen=True)
 class OrderAck:
     order_id: str

@@ -7,7 +7,14 @@ from time import monotonic
 
 from botdca.alerts import Alert, AlertCondition, AlertDispatcher, AlertSeverity
 from botdca.domain import BotState
-from botdca.exchange import AccountSnapshot, ExchangeExecutor, OpenOrder, OrderAck, PositionSnapshot
+from botdca.exchange import (
+    AccountSnapshot,
+    ExchangeExecutor,
+    OpenOrder,
+    OrderAck,
+    PositionAlreadyClosedError,
+    PositionSnapshot,
+)
 from botdca.instruments import InstrumentRules
 from botdca.order_identity import deterministic_order_link_id
 from botdca.order_plan import build_resting_order_plan, initial_market_qty
@@ -439,6 +446,13 @@ class LiveStrategyService:
             and not installing_initial_tp
             and not resizing_tp
         ):
+            # Closing a position (the TP filling, or a manual close) makes the
+            # exchange cancel the reduce-only TP, and the order update can land
+            # before the position update. Check once more before calling it lost.
+            latest = self.exchange.get_position(self.symbol)
+            if not latest.is_open:
+                self._flat_since = None
+                return self._sync_flat_position(latest)
             self._alert(
                 AlertCondition.MISSING_TAKE_PROFIT,
                 AlertSeverity.CRITICAL,
@@ -455,17 +469,25 @@ class LiveStrategyService:
             reduce_only=True,
         )
         if tp_match is None:
-            tp = self.exchange.place_tp_limit(
-                self.symbol,
-                float(plan.take_profit.qty),
-                float(plan.take_profit.price),
-                order_link_id=deterministic_order_link_id(
-                    "tp",
-                    cycle.id,
-                    plan.take_profit.qty,
-                    plan.take_profit.price,
-                ),
-            )
+            try:
+                tp = self.exchange.place_tp_limit(
+                    self.symbol,
+                    float(plan.take_profit.qty),
+                    float(plan.take_profit.price),
+                    order_link_id=deterministic_order_link_id(
+                        "tp",
+                        cycle.id,
+                        plan.take_profit.qty,
+                        plan.take_profit.price,
+                    ),
+                )
+            except PositionAlreadyClosedError:
+                # The position closed between the read and this order.
+                latest = self.exchange.get_position(self.symbol)
+                if latest.is_open:
+                    raise
+                self._flat_since = None
+                return self._sync_flat_position(latest)
             if installing_initial_tp:
                 self._entry_submitted_at = None
                 assessment = installed(

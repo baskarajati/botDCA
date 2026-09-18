@@ -1,8 +1,16 @@
 from decimal import Decimal
 
+import pytest
+
 from botdca.bybit_events import ExecutionEvent
 from botdca.database import Database
-from botdca.exchange import AccountSnapshot, OpenOrder, OrderAck, PositionSnapshot
+from botdca.exchange import (
+    AccountSnapshot,
+    OpenOrder,
+    OrderAck,
+    PositionAlreadyClosedError,
+    PositionSnapshot,
+)
 from botdca.instruments import InstrumentRules
 from botdca.live_service import LiveStrategyService
 from botdca.persistence import EventStore
@@ -579,3 +587,72 @@ def test_a_dca0_basket_holds_for_its_take_profit_without_manual_intervention() -
     assert strategy.current_cycle.status == BasketStatus.OPEN
     assert service.exposure().max_dca_reached is False
     assert "max_dca_reached" not in store.open_alert_conditions(["HYPEUSDT"])
+
+
+class _ClosingExchange(FakeExchange):
+    """The position closes while a sync is running (TP fill or manual close)."""
+
+    def __init__(self, *, close_after_order_read: bool = False, reject_tp: bool = False) -> None:
+        super().__init__(_long(), _account())
+        self.close_after_order_read = close_after_order_read
+        self.reject_tp = reject_tp
+
+    def get_open_orders(self, symbol: str) -> list[OpenOrder]:
+        orders = super().get_open_orders(symbol)
+        if self.close_after_order_read:
+            self.position = _flat()  # the TP was already cancelled by the close
+        return orders
+
+    def place_tp_limit(self, symbol, qty, price, *, order_link_id=None):
+        if self.reject_tp:
+            self.calls.append(("place_tp_limit_rejected", symbol))
+            self.position = _flat()
+            raise PositionAlreadyClosedError("current position is zero (110017)")
+        return super().place_tp_limit(symbol, qty, price, order_link_id=order_link_id)
+
+
+def test_a_tp_cancelled_by_a_closing_position_is_not_reported_as_lost() -> None:
+    strategy = DcaStrategy(StrategyConfig())
+    strategy.resume()
+    store = _store()
+    _record_entry_fill(store)
+    exchange = _ClosingExchange(close_after_order_read=True)
+    service = _journaled_service(strategy, exchange, store, _Clock())
+
+    result = service.sync()
+
+    assert result.position.size == 0.0
+    assert not any(call[0] == "place_tp_limit" for call in exchange.calls)
+    assert _alert_conditions(store) == []
+    assert store.open_alert_conditions(["HYPEUSDT"]) == []
+    assert strategy.current_cycle is None
+
+
+def test_a_tp_rejected_because_the_position_just_closed_does_not_crash() -> None:
+    strategy = DcaStrategy(StrategyConfig())
+    strategy.resume()
+    store = _store()
+    _record_entry_fill(store)
+    exchange = _ClosingExchange(reject_tp=True)
+    service = _journaled_service(strategy, exchange, store, _Clock())
+
+    result = service.sync()
+
+    assert ("place_tp_limit_rejected", "HYPEUSDT") in exchange.calls
+    assert result.position.size == 0.0
+    assert strategy.current_cycle is None
+
+
+def test_a_tp_rejection_while_the_position_is_still_open_is_raised() -> None:
+    class StillOpen(_ClosingExchange):
+        def place_tp_limit(self, symbol, qty, price, *, order_link_id=None):
+            raise PositionAlreadyClosedError("inconsistent exchange answer")
+
+    strategy = DcaStrategy(StrategyConfig())
+    strategy.resume()
+    store = _store()
+    _record_entry_fill(store)
+    service = _journaled_service(strategy, StillOpen(), store, _Clock())
+
+    with pytest.raises(PositionAlreadyClosedError):
+        service.sync()
