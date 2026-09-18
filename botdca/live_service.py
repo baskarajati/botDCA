@@ -7,7 +7,14 @@ from time import monotonic
 
 from botdca.alerts import Alert, AlertCondition, AlertDispatcher, AlertSeverity
 from botdca.domain import BotState
-from botdca.exchange import AccountSnapshot, ExchangeExecutor, OpenOrder, OrderAck, PositionSnapshot
+from botdca.exchange import (
+    AccountSnapshot,
+    ExchangeExecutor,
+    OpenOrder,
+    OrderAck,
+    PositionAlreadyClosedError,
+    PositionSnapshot,
+)
 from botdca.instruments import InstrumentRules
 from botdca.order_identity import deterministic_order_link_id
 from botdca.order_plan import build_resting_order_plan, initial_market_qty
@@ -152,6 +159,15 @@ class LiveStrategyService:
                 cycle_id=cycle.id if cycle is not None else None,
                 context={"strategy_version_id": self.strategy_version_id, **context},
             )
+        )
+
+    def _alert_protection_lost(self, assessment: ProtectionAssessment) -> None:
+        """Page a human: an open basket holds no valid take profit."""
+        self._alert(
+            AlertCondition.MISSING_TAKE_PROFIT,
+            AlertSeverity.CRITICAL,
+            assessment.detail,
+            **assessment.describe(),
         )
 
     def _initial_tp_pending(self, assessment: ProtectionAssessment) -> bool:
@@ -402,7 +418,10 @@ class LiveStrategyService:
         # -- protection first ------------------------------------------
         # An open position must hold a valid exchange-hosted TP or be reported
         # as explicitly unhealthy. Protection is assessed before the TP is
-        # rebuilt so a genuinely unprotected basket is always journaled.
+        # rebuilt, so every sync result carries the state the sync found.
+        # The critical alert waits for the result of the repair. A take profit
+        # that the exchange cancelled while it closed the position is not lost
+        # protection, and a critical alert for it is a false alarm.
         assessment = assess_protection(
             symbol=self.symbol,
             position_qty=position.size,
@@ -434,17 +453,19 @@ class LiveStrategyService:
         resizing_tp = (
             assessment.status is ProtectionStatus.MISSING and assessment.resting_tp_orders == 1
         )
-        if (
+        protection_lost = (
             assessment.status is ProtectionStatus.MISSING
             and not installing_initial_tp
             and not resizing_tp
-        ):
-            self._alert(
-                AlertCondition.MISSING_TAKE_PROFIT,
-                AlertSeverity.CRITICAL,
-                assessment.detail,
-                **assessment.describe(),
-            )
+        )
+        if protection_lost:
+            # Closing a position (the TP filling, or a manual close) makes the
+            # exchange cancel the reduce-only TP, and the order update can land
+            # before the position update. Check once more before calling it lost.
+            latest = self.exchange.get_position(self.symbol)
+            if not latest.is_open:
+                self._flat_since = None
+                return self._sync_flat_position(latest)
 
         tp_orders = [order for order in open_orders if _is_bot_order(order, "tp")]
         tp_match = _matching_limit(
@@ -455,17 +476,35 @@ class LiveStrategyService:
             reduce_only=True,
         )
         if tp_match is None:
-            tp = self.exchange.place_tp_limit(
-                self.symbol,
-                float(plan.take_profit.qty),
-                float(plan.take_profit.price),
-                order_link_id=deterministic_order_link_id(
-                    "tp",
-                    cycle.id,
-                    plan.take_profit.qty,
-                    plan.take_profit.price,
-                ),
-            )
+            try:
+                tp = self.exchange.place_tp_limit(
+                    self.symbol,
+                    float(plan.take_profit.qty),
+                    float(plan.take_profit.price),
+                    order_link_id=deterministic_order_link_id(
+                        "tp",
+                        cycle.id,
+                        plan.take_profit.qty,
+                        plan.take_profit.price,
+                    ),
+                )
+            except PositionAlreadyClosedError:
+                # The position closed between the read and this order.
+                latest = self.exchange.get_position(self.symbol)
+                if latest.is_open:
+                    # The position and the order endpoint disagree. The basket
+                    # can be open and unprotected, so page a human before failing.
+                    if protection_lost:
+                        self._alert_protection_lost(assessment)
+                    raise
+                self._flat_since = None
+                return self._sync_flat_position(latest)
+            except Exception:
+                # The repair failed for another reason and the basket holds no
+                # take profit. This is the loss the critical alert is for.
+                if protection_lost:
+                    self._alert_protection_lost(assessment)
+                raise
             if installing_initial_tp:
                 self._entry_submitted_at = None
                 assessment = installed(
@@ -502,6 +541,10 @@ class LiveStrategyService:
             if assessment.healthy:
                 self._entry_submitted_at = None
                 self.alerts.clear(AlertCondition.MISSING_TAKE_PROFIT, self.symbol, cycle.id)
+            elif protection_lost:
+                # A reduce-only order rests, but it does not cover the basket,
+                # and no repair runs to correct it.
+                self._alert_protection_lost(assessment)
         # Keep protection installed while replacing stale reduce-only exits.
         for order in tp_orders:
             if tp_match is None or order.order_id != tp_match.order_id:

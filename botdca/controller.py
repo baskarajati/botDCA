@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from botdca.exchange import ExchangeExecutor, OrderAck, PositionSnapshot
+from botdca.exchange import (
+    ExchangeExecutor,
+    OrderAck,
+    PositionAlreadyClosedError,
+    PositionSnapshot,
+)
 from botdca.order_identity import deterministic_order_link_id
 from botdca.strategy import DcaStrategy
 
@@ -37,6 +42,17 @@ class TradingController:
         self.exchange = exchange
         self.symbol = symbol.upper()
 
+    def _already_flat(self, position: PositionSnapshot) -> ManualCloseResult:
+        """Report a close that had nothing left to close."""
+        if self.strategy.current_cycle is not None:
+            self.strategy.mark_closed(realized_pnl_usdt=0.0)
+            self.strategy.pause()
+        return ManualCloseResult(
+            status="already_flat",
+            position_before_close=position,
+            close_order=None,
+        )
+
     def manual_close_and_pause(self) -> ManualCloseResult:
         # Pause first so a flat-position observation cannot trigger a re-entry
         # while cancellation/close requests are in flight.
@@ -47,14 +63,7 @@ class TradingController:
 
         position = self.exchange.get_position(self.symbol)
         if not position.is_open:
-            if self.strategy.current_cycle is not None:
-                self.strategy.mark_closed(realized_pnl_usdt=0.0)
-                self.strategy.pause()
-            return ManualCloseResult(
-                status="already_flat",
-                position_before_close=position,
-                close_order=None,
-            )
+            return self._already_flat(position)
 
         if position.side != "Buy":
             raise ControllerSafetyError(
@@ -67,16 +76,26 @@ class TradingController:
             if self.strategy.current_cycle is not None
             else f"{position.average_entry}:{position.size}"
         )
-        close_order = self.exchange.close_long(
-            self.symbol,
-            position.size,
-            order_link_id=deterministic_order_link_id(
-                "close",
+        try:
+            close_order = self.exchange.close_long(
                 self.symbol,
-                cycle_identity,
                 position.size,
-            ),
-        )
+                order_link_id=deterministic_order_link_id(
+                    "close",
+                    self.symbol,
+                    cycle_identity,
+                    position.size,
+                ),
+            )
+        except PositionAlreadyClosedError:
+            # The take profit filled between the position read and this close.
+            # The operator asked for a flat position and the position is flat.
+            latest = self.exchange.get_position(self.symbol)
+            if latest.is_open:
+                # The exchange refused a reduce-only close and still reports the
+                # position open. The two answers disagree, so a human must look.
+                raise
+            return self._already_flat(position)
         return ManualCloseResult(
             status="close_submitted",
             position_before_close=position,

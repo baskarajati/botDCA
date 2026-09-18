@@ -9,6 +9,18 @@ class LiveTradingDisabled(RuntimeError):
     """Raised when a mutating exchange action is attempted while live trading is off."""
 
 
+class PositionAlreadyClosedError(RuntimeError):
+    """The exchange refused a reduce-only order because the position is already flat.
+
+    place_tp_limit and close_long raise this when the position closes between
+    the read that decided on the order and the order itself. An adapter must
+    translate its own exchange's refusal into this type, because a caller that
+    sees a raw adapter error cannot tell a lost race from a real failure.
+    A caller reads the position again before it acts: only a flat answer proves
+    the race, and an answer that still reports the position open does not.
+    """
+
+
 @dataclass(frozen=True)
 class OrderAck:
     order_id: str

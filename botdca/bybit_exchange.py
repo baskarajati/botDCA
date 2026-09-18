@@ -10,6 +10,7 @@ from botdca.exchange import (
     LiveTradingDisabled,
     OpenOrder,
     OrderAck,
+    PositionAlreadyClosedError,
     PositionSnapshot,
     new_order_link_id,
 )
@@ -17,6 +18,16 @@ from botdca.exchange import (
 
 class BybitApiError(RuntimeError):
     pass
+
+
+#: "current position is zero, cannot fix reduce-only order qty"
+POSITION_ZERO_REDUCE_ONLY = 110017
+
+
+def _is_position_zero_rejection(exc: Exception) -> bool:
+    if getattr(exc, "status_code", None) == POSITION_ZERO_REDUCE_ONLY:
+        return True
+    return f"Bybit API error {POSITION_ZERO_REDUCE_ONLY}:" in str(exc)
 
 
 def _as_order_number(value: float) -> str:
@@ -350,38 +361,48 @@ class BybitExchange:
     ) -> OrderAck:
         self._require_live()
         order_link_id = order_link_id or new_order_link_id("tp")
-        return self._place_idempotent(
-            symbol=symbol,
-            order_link_id=order_link_id,
-            request={
-                "category": "linear",
-                "symbol": symbol.upper(),
-                "side": "Sell",
-                "orderType": "Limit",
-                "qty": _as_order_number(qty),
-                "price": _as_order_number(price),
-                "timeInForce": "GTC",
-                "positionIdx": 0,
-                "reduceOnly": True,
-            },
-        )
+        try:
+            return self._place_idempotent(
+                symbol=symbol,
+                order_link_id=order_link_id,
+                request={
+                    "category": "linear",
+                    "symbol": symbol.upper(),
+                    "side": "Sell",
+                    "orderType": "Limit",
+                    "qty": _as_order_number(qty),
+                    "price": _as_order_number(price),
+                    "timeInForce": "GTC",
+                    "positionIdx": 0,
+                    "reduceOnly": True,
+                },
+            )
+        except (InvalidRequestError, BybitApiError) as exc:
+            if _is_position_zero_rejection(exc):
+                raise PositionAlreadyClosedError(str(exc)) from exc
+            raise
 
     def close_long(self, symbol: str, qty: float, *, order_link_id: str | None = None) -> OrderAck:
         self._require_live()
         order_link_id = order_link_id or new_order_link_id("close")
-        return self._place_idempotent(
-            symbol=symbol,
-            order_link_id=order_link_id,
-            request={
-                "category": "linear",
-                "symbol": symbol.upper(),
-                "side": "Sell",
-                "orderType": "Market",
-                "qty": _as_order_number(qty),
-                "positionIdx": 0,
-                "reduceOnly": True,
-            },
-        )
+        try:
+            return self._place_idempotent(
+                symbol=symbol,
+                order_link_id=order_link_id,
+                request={
+                    "category": "linear",
+                    "symbol": symbol.upper(),
+                    "side": "Sell",
+                    "orderType": "Market",
+                    "qty": _as_order_number(qty),
+                    "positionIdx": 0,
+                    "reduceOnly": True,
+                },
+            )
+        except (InvalidRequestError, BybitApiError) as exc:
+            if _is_position_zero_rejection(exc):
+                raise PositionAlreadyClosedError(str(exc)) from exc
+            raise
 
     def cancel_all(self, symbol: str) -> None:
         self._require_live()
