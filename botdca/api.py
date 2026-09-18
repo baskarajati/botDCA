@@ -22,6 +22,7 @@ from botdca.activation import (
     require_transition,
 )
 from botdca.activation import rank as activation_rank
+from botdca.alerts import AlertCondition
 from botdca.bybit_exchange import BybitApiError, BybitExchange
 from botdca.config import get_settings
 from botdca.controller import ControllerSafetyError, TradingController
@@ -86,6 +87,13 @@ class StrategySlotsSubmission(BaseModel):
 
 class ActivationSubmission(BaseModel):
     status: str = Field(max_length=32)
+
+
+class AlertAcknowledgement(BaseModel):
+    #: Limit to one configured symbol; omitted means every configured symbol.
+    symbol: str | None = Field(default=None, max_length=32)
+    #: Limit to these conditions; omitted means every condition.
+    conditions: list[str] | None = Field(default=None, max_length=32)
 
 
 def _make_runtimes(slots: tuple[StrategySlot, ...]) -> dict[str, BotRuntime]:
@@ -1114,6 +1122,27 @@ def alerts_status(limit: int = 50) -> dict:
         "open_critical_conditions": store.open_alert_conditions(symbols),
         "webhook_configured": bool(settings.bot_alert_webhook_url),
         "dedupe_seconds": settings.bot_alert_dedupe_seconds,
+    }
+
+
+@app.post("/api/v1/alerts/acknowledge")
+def acknowledge_alerts(payload: AlertAcknowledgement) -> dict:
+    """Acknowledge open alerts. They stay in the audit history."""
+    if payload.conditions:
+        unknown = sorted(set(payload.conditions) - {str(c) for c in AlertCondition})
+        if unknown:
+            raise HTTPException(422, f"Unknown alert conditions: {', '.join(unknown)}")
+    symbols = (
+        (_runtime_for_symbol(payload.symbol).strategy.config.symbol,)
+        if payload.symbol
+        else tuple(_strategy_runtimes())
+    )
+    store = _event_store()
+    acknowledged = store.acknowledge_alerts(symbols=symbols, conditions=payload.conditions)
+    _audit_action("OPERATOR_ALERTS_ACKNOWLEDGED", symbol=symbols[0] if payload.symbol else None)
+    return {
+        "acknowledged": acknowledged,
+        "open_critical_conditions": store.open_alert_conditions(symbols),
     }
 
 

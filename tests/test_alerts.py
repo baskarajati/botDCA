@@ -143,3 +143,62 @@ def test_webhook_delivery_failure_is_recorded_and_swallowed() -> None:
 def test_webhook_url_must_be_http_or_https() -> None:
     with pytest.raises(ValueError, match="must be http"):
         WebhookAlertSink("file:///etc/passwd")
+
+
+def test_clearing_a_state_resolves_its_persisted_alert_for_that_cycle_only() -> None:
+    store = _store()
+    dispatcher = AlertDispatcher([JournalAlertSink(store)])
+    dispatcher.dispatch(_alert(condition=AlertCondition.MISSING_TAKE_PROFIT, cycle_id="c1"))
+    dispatcher.dispatch(_alert(condition=AlertCondition.MISSING_TAKE_PROFIT, cycle_id="c2"))
+    dispatcher.dispatch(_alert(condition=AlertCondition.MISSING_TAKE_PROFIT, symbol="ONDOUSDT"))
+
+    dispatcher.clear(AlertCondition.MISSING_TAKE_PROFIT, "HYPEUSDT", "c1")
+
+    rows = {(row["symbol"], row["cycle_id"]): row for row in store.recent_alerts()}
+    assert rows[("HYPEUSDT", "c1")]["resolved_at"] is not None
+    assert rows[("HYPEUSDT", "c2")]["resolved_at"] is None
+    assert store.open_alert_conditions(["ONDOUSDT"]) == ["missing_take_profit"]
+
+
+def test_clearing_without_a_cycle_resolves_every_cycle_of_the_symbol() -> None:
+    store = _store()
+    dispatcher = AlertDispatcher([JournalAlertSink(store)])
+    dispatcher.dispatch(_alert(condition=AlertCondition.WORKER_CRASHED, cycle_id="c1"))
+    dispatcher.dispatch(_alert(condition=AlertCondition.WORKER_CRASHED, cycle_id=None))
+
+    dispatcher.clear(AlertCondition.WORKER_CRASHED, "HYPEUSDT")
+
+    assert store.open_alert_conditions(["HYPEUSDT"]) == []
+    assert len(store.recent_alerts(["HYPEUSDT"])) == 2  # history is kept
+
+
+def test_operator_acknowledgement_closes_alerts_but_keeps_history() -> None:
+    store = _store()
+    dispatcher = AlertDispatcher([JournalAlertSink(store)])
+    dispatcher.dispatch(_alert(condition=AlertCondition.PRIVATE_STREAM_DISCONNECTED))
+    dispatcher.dispatch(_alert(condition=AlertCondition.RECONCILIATION_FAILED))
+
+    acknowledged = store.acknowledge_alerts(
+        symbols=["HYPEUSDT"], conditions=["private_stream_disconnected"]
+    )
+
+    assert acknowledged == 1
+    assert store.open_alert_conditions(["HYPEUSDT"]) == ["reconciliation_failed"]
+    assert len(store.recent_alerts(["HYPEUSDT"])) == 2
+
+
+def test_a_failing_resolve_never_breaks_the_trading_loop() -> None:
+    class Broken:
+        name = "broken"
+
+        def emit(self, alert: Alert) -> None:
+            pass
+
+        def resolve(self, condition, symbol, cycle_id) -> None:
+            raise RuntimeError("database offline")
+
+    dispatcher = AlertDispatcher([Broken()])
+
+    dispatcher.clear(AlertCondition.MISSING_TAKE_PROFIT, "HYPEUSDT", "c1")
+
+    assert dispatcher.sink_errors == ["broken: RuntimeError: database offline"]

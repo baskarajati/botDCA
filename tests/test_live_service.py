@@ -368,3 +368,150 @@ def test_partially_filled_dca_is_kept_without_new_entry_liability() -> None:
     assert result.dca_order.order_id == "dca-1"
     assert not any(call[0] == "place_dca_limit" for call in exchange.calls)
     assert not any(call[0] == "cancel_order" for call in exchange.calls)
+
+
+# -- protection alert lifecycle ---------------------------------------------
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _journaled_service(
+    strategy: DcaStrategy, exchange: FakeExchange, store: EventStore, clock: _Clock
+) -> LiveStrategyService:
+    from botdca.alerts import AlertDispatcher, JournalAlertSink
+
+    return LiveStrategyService(
+        strategy=strategy,
+        exchange=exchange,
+        store=store,
+        rules=_rules(),
+        risk_limits=RiskLimits(),
+        reentry_delay_seconds=0,
+        clock=clock,
+        alerts=AlertDispatcher([JournalAlertSink(store)]),
+    )
+
+
+def _record_entry_fill(store: EventStore) -> None:
+    store.record_execution(
+        ExecutionEvent(
+            symbol="HYPEUSDT",
+            order_id="open-1",
+            order_link_id="botdca-open-1",
+            execution_id="exec-1",
+            side="Buy",
+            price=80.0,
+            qty=0.3,
+            fee=0.0,
+            realized_pnl=0.0,
+            execution_time_ms=1_789_746_477_792,
+        )
+    )
+
+
+def _alert_conditions(store: EventStore) -> list[tuple[str, str]]:
+    return [(row["condition"], row["severity"]) for row in store.recent_alerts(["HYPEUSDT"])]
+
+
+def test_first_take_profit_after_an_entry_is_routine_not_lost_protection() -> None:
+    strategy = DcaStrategy(StrategyConfig())
+    strategy.resume()
+    store = _store()
+    clock = _Clock()
+    exchange = FakeExchange(_flat(), _account())
+    service = _journaled_service(strategy, exchange, store, clock)
+
+    assert service.sync().status == "entry_submitted"
+    _record_entry_fill(store)
+    exchange.position = _long()
+    clock.now += 2.2
+
+    result = service.sync()
+
+    assert result.take_profit_order is not None
+    assert result.protection_status == "protected"
+    assert _alert_conditions(store) == []
+    assert store.open_alert_conditions(["HYPEUSDT"]) == []
+
+
+def test_missing_take_profit_after_the_grace_window_is_still_critical() -> None:
+    strategy = DcaStrategy(StrategyConfig())
+    strategy.resume()
+    store = _store()
+    clock = _Clock()
+    exchange = FakeExchange(_flat(), _account())
+    service = _journaled_service(strategy, exchange, store, clock)
+
+    service.sync()
+    _record_entry_fill(store)
+    exchange.position = _long()
+    clock.now += service.initial_tp_grace_seconds + 1
+
+    service.sync()
+
+    assert ("missing_take_profit", "critical") in _alert_conditions(store)
+    assert ("protection_repaired", "warning") in _alert_conditions(store)
+
+
+def test_missing_take_profit_after_a_restart_is_critical_then_resolves() -> None:
+    strategy = DcaStrategy(StrategyConfig())
+    strategy.resume()
+    store = _store()
+    _record_entry_fill(store)
+    exchange = FakeExchange(_long(), _account())
+    # A fresh process never submitted this entry, so there is no grace.
+    service = _journaled_service(strategy, exchange, store, _Clock())
+
+    service.sync()
+    assert store.open_alert_conditions(["HYPEUSDT"]) == ["missing_take_profit"]
+
+    service.sync()  # the TP placed by the repair is now resting and matched
+
+    assert store.open_alert_conditions(["HYPEUSDT"]) == []
+    assert ("missing_take_profit", "critical") in _alert_conditions(store)
+
+
+def test_resizing_a_stale_take_profit_is_not_reported_as_lost_protection() -> None:
+    strategy = DcaStrategy(StrategyConfig())
+    strategy.resume()
+    store = _store()
+    _record_entry_fill(store)
+    exchange = FakeExchange(_long(), _account())
+    exchange.open_orders.append(
+        OpenOrder("tp-old", "botdca-tp-old", "HYPEUSDT", "Sell", "Limit", 81.0, 0.2, True, "New")
+    )
+    service = _journaled_service(strategy, exchange, store, _Clock())
+
+    result = service.sync()
+
+    assert result.protection_status == "repaired"
+    assert _alert_conditions(store) == [("protection_repaired", "info")]
+    assert ("cancel_order", "HYPEUSDT", "tp-old") in exchange.calls
+
+
+def test_a_flat_position_resolves_protection_and_max_dca_alerts() -> None:
+    from botdca.alerts import Alert, AlertCondition, AlertSeverity
+
+    strategy = DcaStrategy(StrategyConfig())
+    store = _store()
+    exchange = FakeExchange(_flat(), _account())
+    service = _journaled_service(strategy, exchange, store, _Clock())
+    for condition in (
+        AlertCondition.MISSING_TAKE_PROFIT,
+        AlertCondition.MAX_DCA_REACHED,
+        AlertCondition.RECONCILIATION_FAILED,
+    ):
+        service.alerts.dispatch(
+            Alert(condition, AlertSeverity.CRITICAL, "HYPEUSDT", "old", cycle_id="c-old")
+        )
+    assert len(store.open_alert_conditions(["HYPEUSDT"])) == 3
+
+    assert service.sync().status == "flat_paused"
+
+    assert store.open_alert_conditions(["HYPEUSDT"]) == []

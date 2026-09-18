@@ -106,6 +106,9 @@ class JournalAlertSink:
             payload=alert.describe(),
         )
 
+    def resolve(self, condition: AlertCondition, symbol: str, cycle_id: str | None) -> None:
+        self.store.resolve_alerts(condition=str(condition), symbol=symbol, cycle_id=cycle_id)
+
 
 class MemoryAlertSink:
     """Collect alerts in process. Used by tests and by the operator console."""
@@ -200,10 +203,25 @@ class AlertDispatcher:
             self.sinks.append(sink)
 
     def clear(self, condition: AlertCondition, symbol: str, cycle_id: str | None = None) -> None:
-        """Mark a persistent state resolved so its next occurrence alerts again."""
+        """Mark a persistent state resolved so its next occurrence alerts again.
+
+        Sinks that keep durable state (the journal) also mark their open alerts
+        resolved, so a cleared condition stops counting as open in readiness.
+        Without a cycle id the durable resolution covers every cycle.
+        """
         key = f"{condition}:{symbol.upper()}:{cycle_id or '-'}"
         with self._lock:
             self._last_emitted.pop(key, None)
+            sinks = list(self.sinks)
+        for sink in sinks:
+            resolve = getattr(sink, "resolve", None)
+            if resolve is None:
+                continue
+            try:
+                resolve(condition, symbol, cycle_id)
+            except Exception as exc:  # noqa: BLE001 - alerting never breaks the trading loop
+                self.sink_errors.append(f"{sink.name}: {type(exc).__name__}: {exc}")
+                del self.sink_errors[:-20]
 
     def dispatch(self, alert: Alert, *, force: bool = False) -> bool:
         """Deliver the alert unless an identical state is still within cooldown."""

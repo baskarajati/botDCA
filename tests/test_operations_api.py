@@ -376,3 +376,43 @@ def test_trusted_proxy_requires_forwarded_https(client, monkeypatch):
     assert api._credential_transport_allowed(request) is False
     request.headers = {"X-Forwarded-Proto": "https"}
     assert api._credential_transport_allowed(request) is True
+
+
+def test_operator_can_acknowledge_stale_alerts(client):
+    store = api._event_store()
+    for condition in ("worker_crashed", "private_stream_disconnected"):
+        store.record_alert(
+            condition=condition,
+            severity="critical",
+            symbol="HYPEUSDT",
+            message="from an earlier incident",
+            dedupe_key=f"{condition}:HYPEUSDT:-",
+        )
+    assert client.get("/api/v1/alerts").json()["open_critical_conditions"] == [
+        "private_stream_disconnected",
+        "worker_crashed",
+    ]
+
+    rejected = client.post("/api/v1/alerts/acknowledge", json={"conditions": ["nonsense"]})
+    assert rejected.status_code == 422
+    assert (
+        client.post(
+            "/api/v1/alerts/acknowledge", json={}, headers={"X-Operator-Token": "wrong"}
+        ).status_code
+        == 401
+    )
+
+    response = client.post(
+        "/api/v1/alerts/acknowledge", json={"conditions": ["worker_crashed"]}
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "acknowledged": 1,
+        "open_critical_conditions": ["private_stream_disconnected"],
+    }
+    response = client.post("/api/v1/alerts/acknowledge", json={"symbol": "HYPEUSDT"})
+    assert response.json()["open_critical_conditions"] == []
+    alerts = client.get("/api/v1/alerts").json()["alerts"]
+    assert len(alerts) == 2 and all(row["acknowledged"] for row in alerts)
+    events = [row["event_type"] for row in store.recent_events("HYPEUSDT", limit=5)]
+    assert "OPERATOR_ALERTS_ACKNOWLEDGED" in events

@@ -121,6 +121,8 @@ class AlertRecord(Base):
     message: Mapped[str] = mapped_column(String(512))
     context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Set by the runtime when the alerted condition is observed to have cleared.
+    resolved_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 #: Columns added after the first release. `create_all` never alters an existing
@@ -136,6 +138,7 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str, str], ...] = (
         "'greensynergy-reconstructed-v1'",
     ),
     ("strategy_slots", "activation_status", "VARCHAR(32)", "'draft'"),
+    ("alerts", "resolved_at", "TIMESTAMP", "NULL"),
 )
 
 #: Exchange millisecond timestamps (about 1.8e12) overflow a 32-bit INTEGER.
