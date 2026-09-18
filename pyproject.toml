@@ -12,6 +12,7 @@ dependencies = [
   "sqlalchemy>=2.0,<3",
   "psycopg[binary]>=3.2,<4",
   "pybit>=5.11,<6",
+  "cryptography>=45,<47",
 ]
 
 [project.optional-dependencies]
@@ -19,11 +20,19 @@ dev = [
   "pytest>=8.4,<9",
   "pytest-asyncio>=1.1,<2",
   "ruff>=0.12,<1",
+  "httpx>=0.28,<0.29",
 ]
 
 [project.scripts]
 botdca-backtest = "botdca.backtest_cli:main"
 botdca-compare-export = "botdca.trader_compare_cli:main"
+botdca-profile-export = "botdca.historical_profile_cli:main"
+botdca-validate-strategy = "botdca.historical_validation_cli:main"
+botdca-calibrate-strategy = "botdca.calibration_cli:main"
+botdca-analyze-risk = "botdca.historical_risk_cli:main"
+botdca-identify-entry = "botdca.entry_identification_cli:main"
+botdca-test-trigger-reference = "botdca.trigger_reference_experiment_cli:main"
+botdca-audit-second-level = "botdca.second_level_audit_cli:main"
 
 [build-system]
 requires = ["setuptools>=80"]
@@ -32,6 +41,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["botdca*"]
+
+[tool.setuptools.package-data]
+botdca = ["static/*.html", "static/*.css", "static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

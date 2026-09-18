@@ -71,3 +71,30 @@ class BybitInstrumentClient:
                 None if max_market in {None, ""} else Decimal(str(max_market))
             ),
         )
+
+    def list_linear_usdt_symbols(self) -> list[str]:
+        symbols: set[str] = set()
+        cursor = ""
+        for _ in range(10):
+            parameters = {"category": "linear", "limit": 1000}
+            if cursor:
+                parameters["cursor"] = cursor
+            response = self.session.get_instruments_info(**parameters)
+            if response.get("retCode") != 0:
+                raise RuntimeError(
+                    f"Bybit instrument request failed {response.get('retCode')}: "
+                    f"{response.get('retMsg', 'unknown')}"
+                )
+            result = response.get("result", {})
+            for row in result.get("list", []):
+                symbol = str(row.get("symbol", "")).upper()
+                if (
+                    symbol.endswith("USDT")
+                    and row.get("contractType") == "LinearPerpetual"
+                    and row.get("status") == "Trading"
+                ):
+                    symbols.add(symbol)
+            cursor = str(result.get("nextPageCursor") or "")
+            if not cursor:
+                break
+        return sorted(symbols)

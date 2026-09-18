@@ -1,7 +1,12 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 from botdca.backtest import BacktestResult, CycleReplay
-from botdca.trader_export import compare_replay_to_trader, load_trader_cycles
+from botdca.trader_export import (
+    compare_replay_to_trader,
+    load_trader_cycles,
+    parse_trader_export,
+)
 
 
 def _write_export(path: Path) -> None:
@@ -84,3 +89,55 @@ def test_compare_replay_matches_nearest_close_times(tmp_path: Path) -> None:
     assert result.match_rate_percent == 100.0
     assert result.exact_dca_match_percent == 100.0
     assert result.median_close_time_error_seconds == 25.0
+
+
+def test_parse_trader_export_merges_close_fragments_and_converts_timezone(
+    tmp_path: Path,
+) -> None:
+    export = tmp_path / "fragmented.csv"
+    export.write_text(
+        "position_symbol,position_side,margin_and_leverage,order_qty,roi_percent,"
+        "entry_price,opened_on,closing_price,closed_on,followers\n"
+        "HYPEUSDT,Long,Cross 24.00x,1.00 HYPE,+20%,99.000 USDT,"
+        "2026-09-16 20:00:00,100.000 USDT,2026-09-16 21:00:00,1\n"
+        "HYPEUSDT,Long,Cross 24.00x,1.40 HYPE,+20%,99.000 USDT,"
+        "2026-09-16 20:30:00,100.001 USDT,2026-09-16 21:00:02,1\n"
+        "HYPEUSDT,Long,Cross 24.00x,1.00 HYPE,+20%,100.000 USDT,"
+        "2026-09-16 21:01:00,101.000 USDT,2026-09-16 22:00:00,1\n",
+        encoding="utf-8",
+    )
+
+    parsed = parse_trader_export(
+        export,
+        timezone_name="Europe/Rome",
+        expected_symbol="HYPEUSDT",
+        expected_side="Long",
+    )
+
+    assert parsed.grouping.exact_key_groups == 3
+    assert parsed.grouping.grouped_cycles == 2
+    assert parsed.grouping.close_fragment_groups_merged == 1
+    assert parsed.grouping.overlapping_cycles == 0
+    assert parsed.cycles[0].dca_count == 1
+    assert parsed.cycles[0].close_fragment_count == 2
+    assert parsed.cycles[0].closed_ms == int(
+        datetime(2026, 9, 16, 19, 0, 2, tzinfo=UTC).timestamp() * 1000
+    )
+
+
+def test_parse_trader_export_rejects_wrong_symbol(tmp_path: Path) -> None:
+    export = tmp_path / "wrong-symbol.csv"
+    export.write_text(
+        "position_symbol,position_side,margin_and_leverage,order_qty,roi_percent,"
+        "entry_price,opened_on,closing_price,closed_on,followers\n"
+        "BTCUSDT,Long,Cross 24.00x,1 BTC,+20%,100 USDT,"
+        "2026-09-16 20:00:00,101 USDT,2026-09-16 21:00:00,1\n",
+        encoding="utf-8",
+    )
+
+    try:
+        parse_trader_export(export, expected_symbol="HYPEUSDT")
+    except ValueError as exc:
+        assert "expected HYPEUSDT" in str(exc)
+    else:
+        raise AssertionError("wrong symbol should be rejected")

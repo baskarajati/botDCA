@@ -72,6 +72,21 @@ class FakeSession:
             },
         }
 
+    def get_api_key_information(self):
+        return {
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {
+                "readOnly": 0,
+                "uta": 1,
+                "ips": ["203.0.113.10"],
+                "permissions": {
+                    "ContractTrade": ["Order", "Position"],
+                    "Wallet": [],
+                },
+            },
+        }
+
 
 def test_live_guard_blocks_mutating_orders() -> None:
     session = FakeSession()
@@ -129,6 +144,16 @@ def test_account_snapshot_comes_from_unified_wallet() -> None:
     assert account.total_perp_upl_usd == -1.5
     assert account.account_im_rate == 0.245
     assert account.account_mm_rate == 0.015
+
+
+def test_api_key_information_comes_from_exchange() -> None:
+    exchange = BybitExchange(session=FakeSession(), live_trading=False)
+
+    info = exchange.get_api_key_information()
+
+    assert info["readOnly"] == 0
+    assert info["permissions"]["ContractTrade"] == ["Order", "Position"]
+    assert "apiSecret" not in info
 
 
 def test_execution_message_supports_multiple_fills_and_symbol_filter() -> None:

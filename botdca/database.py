@@ -77,6 +77,19 @@ class PositionSnapshotRecord(Base):
     recorded_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
+class StrategySlotRecord(Base):
+    __tablename__ = "strategy_slots"
+
+    slot: Mapped[int] = mapped_column(Integer, primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    symbol: Mapped[str] = mapped_column(String(32))
+    base_margin_usdt: Mapped[float] = mapped_column(Float)
+    updated_at: Mapped[datetime] = mapped_column(
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
 class Database:
     def __init__(self, url: str) -> None:
         self.engine = create_engine(url, pool_pre_ping=True)

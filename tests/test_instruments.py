@@ -27,6 +27,34 @@ class FakeInstrumentSession:
         }
 
 
+class FakeInstrumentListSession:
+    def get_instruments_info(self, **kwargs):
+        assert kwargs["category"] == "linear"
+        return {
+            "retCode": 0,
+            "result": {
+                "list": [
+                    {
+                        "symbol": "BTCUSDT",
+                        "contractType": "LinearPerpetual",
+                        "status": "Trading",
+                    },
+                    {
+                        "symbol": "ETHUSDC",
+                        "contractType": "LinearPerpetual",
+                        "status": "Trading",
+                    },
+                    {
+                        "symbol": "OLDUSDT",
+                        "contractType": "LinearPerpetual",
+                        "status": "Settled",
+                    },
+                ],
+                "nextPageCursor": "",
+            },
+        }
+
+
 def test_instrument_rules_are_loaded_from_bybit_metadata() -> None:
     rules = BybitInstrumentClient(FakeInstrumentSession()).get_linear_rules("hypeusdt")
 
@@ -35,6 +63,12 @@ def test_instrument_rules_are_loaded_from_bybit_metadata() -> None:
     assert rules.qty_step == Decimal("0.001")
     assert rules.min_order_qty == Decimal("0.01")
     assert rules.min_notional_value == Decimal(5)
+
+
+def test_only_trading_linear_usdt_perpetuals_are_listed() -> None:
+    symbols = BybitInstrumentClient(FakeInstrumentListSession()).list_linear_usdt_symbols()
+
+    assert symbols == ["BTCUSDT"]
 
 
 def test_quantity_and_prices_use_directional_quantization() -> None:

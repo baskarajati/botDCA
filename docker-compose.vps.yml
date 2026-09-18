@@ -1,0 +1,47 @@
+services:
+  api:
+    environment:
+      BYBIT_API_KEY: ""
+      BYBIT_API_SECRET: ""
+      DATABASE_URL_FILE: /run/secrets/botdca_database_url
+      BOT_OPERATOR_TOKEN_FILE: /run/secrets/botdca_operator_token
+      BOT_CREDENTIAL_KEY_FILE: /run/secrets/botdca_credential_key
+      BOT_CREDENTIAL_STORE_PATH: /var/lib/botdca/secrets/bybit.enc
+      BOT_TRUSTED_HTTPS_PROXY: "true"
+    secrets:
+      - source: botdca_credential_key
+        target: botdca_credential_key
+      - source: botdca_database_url
+        target: botdca_database_url
+      - source: botdca_operator_token
+        target: botdca_operator_token
+    volumes:
+      - botdca_secret_data:/var/lib/botdca/secrets
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  db:
+    environment:
+      POSTGRES_PASSWORD: null
+      POSTGRES_PASSWORD_FILE: /run/secrets/botdca_database_password
+    secrets:
+      - source: botdca_database_password
+        target: botdca_database_password
+
+secrets:
+  botdca_credential_key:
+    file: ${BOTDCA_CREDENTIAL_KEY_FILE:?Set BOTDCA_CREDENTIAL_KEY_FILE}
+  botdca_database_password:
+    file: ${BOTDCA_DATABASE_PASSWORD_FILE:?Set BOTDCA_DATABASE_PASSWORD_FILE}
+  botdca_database_url:
+    file: ${BOTDCA_DATABASE_URL_FILE:?Set BOTDCA_DATABASE_URL_FILE}
+  botdca_operator_token:
+    file: ${BOTDCA_OPERATOR_TOKEN_FILE:?Set BOTDCA_OPERATOR_TOKEN_FILE}
+
+volumes:
+  botdca_secret_data:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict
 from threading import Event, Lock, Thread
+from time import monotonic, time
 from typing import Protocol
 
 from botdca.live_service import LiveStrategyService, LiveSyncResult
@@ -30,6 +32,7 @@ class LiveWorker:
         stream: PrivateStream,
         store: EventStore,
         interval_seconds: float = 2.0,
+        execution_recovery: Callable[[], None] | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive")
@@ -42,6 +45,9 @@ class LiveWorker:
         self._lock = Lock()
         self.last_result: LiveSyncResult | None = None
         self.last_error: str | None = None
+        self.last_success_at_ms: int | None = None
+        self.execution_recovery = execution_recovery
+        self._last_recovery_at: float | None = None
 
     @property
     def running(self) -> bool:
@@ -49,6 +55,7 @@ class LiveWorker:
         return bool(thread is not None and thread.is_alive())
 
     def run_once(self) -> LiveSyncResult:
+        reconnected = not self.stream.connected
         if not self.stream.connected:
             self.stream.stop()
             self.stream.start()
@@ -57,6 +64,13 @@ class LiveWorker:
                 symbol=self.service.symbol,
                 payload={},
             )
+        if self.execution_recovery is not None and (
+            reconnected
+            or self._last_recovery_at is None
+            or monotonic() - self._last_recovery_at >= 30
+        ):
+            self.execution_recovery()
+            self._last_recovery_at = monotonic()
         result = self.service.sync()
         self.last_result = result
         self.last_error = None
@@ -70,6 +84,7 @@ class LiveWorker:
             ),
             payload=asdict(result),
         )
+        self.last_success_at_ms = int(time() * 1000)
         return result
 
     def start(self) -> None:

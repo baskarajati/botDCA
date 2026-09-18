@@ -64,6 +64,8 @@ def parse_execution_message(
     for item in message.get("data", []):
         if item.get("category") != "linear":
             continue
+        if item.get("execType", "Trade") in {"Funding", "Settle"}:
+            continue
         item_symbol = str(item.get("symbol", "")).upper()
         if wanted and item_symbol != wanted:
             continue

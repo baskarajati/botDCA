@@ -1,4 +1,5 @@
 from decimal import Decimal
+from threading import RLock
 
 import pytest
 
@@ -18,7 +19,10 @@ def _settings(**overrides) -> Settings:
         "BOT_START_LIVE_WORKER": True,
         "BYBIT_API_KEY": "key",
         "BYBIT_API_SECRET": "secret",
-        "DATABASE_URL": "sqlite+pysqlite:///:memory:",
+        "BYBIT_TESTNET": True,
+        "BOT_OPERATOR_TOKEN": "test-only-operator-token-more-than-32-chars",
+        "BOT_TRIAL_EQUITY_USDT": 100,
+        "DATABASE_URL": "postgresql+psycopg://unit:unit@localhost/unit",
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
@@ -62,6 +66,7 @@ def test_live_worker_construction_wires_authenticated_dependencies() -> None:
     deployment = build_live_worker_deployment(
         settings,
         BotRuntime(settings),
+        database_factory=lambda url: Database("sqlite+pysqlite:///:memory:"),
         exchange_factory=FakeExchange,
         instrument_client_factory=FakeInstrumentClient,
         stream_factory=FakeStream,
@@ -70,6 +75,31 @@ def test_live_worker_construction_wires_authenticated_dependencies() -> None:
     assert deployment.worker.service.exchange.kwargs["live_trading"] is True
     assert deployment.worker.stream.kwargs["api_key"] == "key"
     assert deployment.worker.interval_seconds == 2.0
+
+
+def test_live_worker_uses_runtime_symbol_and_shared_portfolio_lock() -> None:
+    settings = _settings()
+    portfolio_lock = RLock()
+    runtime = BotRuntime(
+        settings,
+        symbol="BTCUSDT",
+        base_margin_usdt=2.5,
+        lock=portfolio_lock,
+    )
+
+    deployment = build_live_worker_deployment(
+        settings,
+        runtime,
+        database_factory=lambda url: Database("sqlite+pysqlite:///:memory:"),
+        exchange_factory=FakeExchange,
+        instrument_client_factory=FakeInstrumentClient,
+        stream_factory=FakeStream,
+    )
+
+    assert deployment.worker.service.symbol == "BTCUSDT"
+    assert deployment.worker.service.strategy.config.base_margin_usdt == 2.5
+    assert deployment.worker.service.lock is portfolio_lock
+    assert deployment.lease.symbol == "BTCUSDT"
 
 
 def test_worker_lease_rejects_duplicate_and_can_be_reacquired() -> None:

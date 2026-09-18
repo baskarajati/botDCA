@@ -32,13 +32,26 @@ class RuntimeSnapshot:
 
 
 class BotRuntime:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        symbol: str | None = None,
+        base_margin_usdt: float | None = None,
+        lock: RLock | None = None,
+    ) -> None:
         self.settings = settings
+        configured_symbol = (symbol or settings.bot_symbol).upper()
+        configured_base_margin = (
+            settings.bot_base_margin_usdt
+            if base_margin_usdt is None
+            else base_margin_usdt
+        )
         self.strategy = DcaStrategy(
             StrategyConfig(
-                symbol=settings.bot_symbol,
+                symbol=configured_symbol,
                 leverage=settings.bot_leverage,
-                base_margin_usdt=settings.bot_base_margin_usdt,
+                base_margin_usdt=configured_base_margin,
                 tp_percent=settings.bot_tp_percent,
             )
         )
@@ -48,7 +61,7 @@ class BotRuntime:
             min_available_balance_usdt=settings.bot_min_available_balance_usdt,
             min_available_equity_ratio=settings.bot_min_available_equity_ratio,
         )
-        self._lock = RLock()
+        self._lock = lock or RLock()
 
     @property
     def lock(self) -> RLock:
@@ -61,7 +74,7 @@ class BotRuntime:
             decision = evaluate_next_dca(self.strategy, self.risk_limits)
             return RuntimeSnapshot(
                 state=self.strategy.state,
-                symbol=self.settings.bot_symbol,
+                symbol=self.strategy.config.symbol,
                 leverage=self.settings.bot_leverage,
                 live_trading=self.settings.bot_live_trading,
                 cycle_id=cycle.id if cycle else None,

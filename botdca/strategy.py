@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 from botdca.domain import DEFAULT_DCA_STEPS, BotState, DcaStep, Fill, TradingCycle
 
@@ -14,9 +15,21 @@ class StrategyConfig:
     dca_steps: tuple[DcaStep, ...] = DEFAULT_DCA_STEPS
 
 
+class DcaTriggerReference(StrEnum):
+    WEIGHTED_AVERAGE = "weighted-average"
+    PREVIOUS_FILL = "previous-fill"
+    INITIAL_ENTRY = "initial-entry"
+
+
 class DcaStrategy:
-    def __init__(self, config: StrategyConfig) -> None:
+    def __init__(
+        self,
+        config: StrategyConfig,
+        *,
+        trigger_reference: DcaTriggerReference = DcaTriggerReference.WEIGHTED_AVERAGE,
+    ) -> None:
         self.config = config
+        self.trigger_reference = trigger_reference
         self.state = BotState.PAUSED
         self.current_cycle: TradingCycle | None = None
         self.reentry_enabled = False
@@ -63,6 +76,10 @@ class DcaStrategy:
             raise ValueError("restored position values must be positive")
         if dca_level < 0 or dca_level > len(self.config.dca_steps):
             raise ValueError("restored dca_level is outside configured ladder")
+        if dca_level > 0 and self.trigger_reference != DcaTriggerReference.WEIGHTED_AVERAGE:
+            raise ValueError(
+                "non-average trigger references require individual restored fill history"
+            )
 
         cycle = TradingCycle(
             symbol=self.config.symbol,
@@ -89,11 +106,22 @@ class DcaStrategy:
         level = cycle.dca_level
         if level >= len(self.config.dca_steps):
             return None
-        avg = cycle.average_entry
-        if avg is None:
+        reference_price = self._next_dca_reference_price(cycle)
+        if reference_price is None:
             return None
         step = self.config.dca_steps[level]
-        return avg * (1 - step.drop_percent_from_average / 100)
+        return reference_price * (1 - step.drop_percent_from_average / 100)
+
+    def _next_dca_reference_price(self, cycle: TradingCycle) -> float | None:
+        if not cycle.fills:
+            return None
+        if self.trigger_reference == DcaTriggerReference.WEIGHTED_AVERAGE:
+            return cycle.average_entry
+        if self.trigger_reference == DcaTriggerReference.PREVIOUS_FILL:
+            return cycle.fills[-1].price
+        if self.trigger_reference == DcaTriggerReference.INITIAL_ENTRY:
+            return cycle.fills[0].price
+        raise ValueError(f"unsupported DCA trigger reference: {self.trigger_reference}")
 
     def next_dca_qty(self) -> float | None:
         cycle = self.current_cycle

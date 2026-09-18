@@ -1,8 +1,13 @@
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+.cache/
 .venv/
+build/
 .env
+secrets/
+*.enc
 *.pyc
 *.egg-info/
+*.trader-profile.json
 .DS_Store

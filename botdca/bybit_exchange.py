@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pybit.exceptions import InvalidRequestError
 from pybit.unified_trading import HTTP
 
 from botdca.exchange import (
@@ -133,7 +134,10 @@ class BybitExchange:
             except Exception:
                 # A timeout/disconnect can happen after Bybit accepted the order.
                 recovered = self._find_order(symbol, candidate)
-                if recovered is not None and str(recovered.get("orderStatus", "")) in active_or_filled:
+                if (
+                    recovered is not None
+                    and str(recovered.get("orderStatus", "")) in active_or_filled
+                ):
                     return self._row_ack(recovered, candidate)
                 raise
             return self._ack(response, candidate)
@@ -143,21 +147,28 @@ class BybitExchange:
         self._require_live()
         if leverage <= 0:
             raise ValueError("leverage must be positive")
-        self._require_ok(
-            self.session.set_leverage(
+        try:
+            response = self.session.set_leverage(
                 category="linear",
                 symbol=symbol.upper(),
                 buyLeverage=str(leverage),
                 sellLeverage=str(leverage),
             )
-        )
+        except InvalidRequestError as exc:
+            if exc.status_code == 110043:
+                return
+            raise
+        if response.get("retCode") != 110043:
+            self._require_ok(response)
 
     def get_position(self, symbol: str) -> PositionSnapshot:
         symbol = symbol.upper()
-        response = self._require_ok(
-            self.session.get_positions(category="linear", symbol=symbol)
-        )
+        response = self._require_ok(self.session.get_positions(category="linear", symbol=symbol))
         rows = response.get("result", {}).get("list", [])
+        if any(int(item.get("positionIdx", 0)) != 0 for item in rows):
+            raise BybitApiError(
+                "Only one-way position mode is supported; do not auto-switch account mode."
+            )
         row = next((item for item in rows if int(item.get("positionIdx", 0)) == 0), None)
         if row is None:
             return PositionSnapshot(symbol, "", 0.0, 0.0, 0.0, 0.0, None, 0.0)
@@ -175,9 +186,7 @@ class BybitExchange:
         )
 
     def get_account_snapshot(self) -> AccountSnapshot:
-        response = self._require_ok(
-            self.session.get_wallet_balance(accountType="UNIFIED")
-        )
+        response = self._require_ok(self.session.get_wallet_balance(accountType="UNIFIED"))
         rows = response.get("result", {}).get("list", [])
         if not rows:
             raise BybitApiError("Bybit wallet balance response did not contain an account row")
@@ -194,11 +203,16 @@ class BybitExchange:
             account_mm_rate=_as_float(row.get("accountMMRate")),
         )
 
+    def get_api_key_information(self) -> dict[str, Any]:
+        response = self._require_ok(self.session.get_api_key_information())
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise BybitApiError("Bybit API key information response was incomplete")
+        return result
+
     def get_last_price(self, symbol: str) -> float:
         symbol = symbol.upper()
-        response = self._require_ok(
-            self.session.get_tickers(category="linear", symbol=symbol)
-        )
+        response = self._require_ok(self.session.get_tickers(category="linear", symbol=symbol))
         rows = response.get("result", {}).get("list", [])
         if not rows:
             raise BybitApiError(f"Bybit ticker response did not contain {symbol}")
@@ -229,9 +243,7 @@ class BybitExchange:
             if str(row.get("orderLinkId", "")).startswith("botdca-")
         ]
 
-    def open_long(
-        self, symbol: str, qty: float, *, order_link_id: str | None = None
-    ) -> OrderAck:
+    def open_long(self, symbol: str, qty: float, *, order_link_id: str | None = None) -> OrderAck:
         return self._place_market_long(
             symbol,
             qty,
@@ -316,9 +328,7 @@ class BybitExchange:
             },
         )
 
-    def close_long(
-        self, symbol: str, qty: float, *, order_link_id: str | None = None
-    ) -> OrderAck:
+    def close_long(self, symbol: str, qty: float, *, order_link_id: str | None = None) -> OrderAck:
         self._require_live()
         order_link_id = order_link_id or new_order_link_id("close")
         return self._place_idempotent(
@@ -337,9 +347,7 @@ class BybitExchange:
 
     def cancel_all(self, symbol: str) -> None:
         self._require_live()
-        self._require_ok(
-            self.session.cancel_all_orders(category="linear", symbol=symbol.upper())
-        )
+        self._require_ok(self.session.cancel_all_orders(category="linear", symbol=symbol.upper()))
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
         self._require_live()

@@ -9,8 +9,10 @@ from botdca.bybit_stream import BybitPrivateStream
 from botdca.config import Settings
 from botdca.database import Database, WorkerLease
 from botdca.event_processor import ExchangeEventProcessor
+from botdca.execution_recovery import ExecutionRecovery
 from botdca.instruments import BybitInstrumentClient
 from botdca.live_service import LiveStrategyService
+from botdca.operations import configuration_snapshot, live_configuration_errors
 from botdca.persistence import EventStore
 from botdca.runtime import BotRuntime
 from botdca.worker import LiveWorker
@@ -56,6 +58,13 @@ def build_live_worker_deployment(
         raise LiveWorkerConfigurationError("BOT_START_LIVE_WORKER must be true")
     if not settings.bybit_api_key or not settings.bybit_api_secret:
         raise LiveWorkerConfigurationError("Bybit API credentials are required")
+    errors = live_configuration_errors(settings)
+    if runtime.strategy.config.base_margin_usdt > runtime.risk_limits.max_strategy_margin_usdt:
+        errors.append(
+            f"{runtime.strategy.config.symbol} initial margin exceeds the new-order guard."
+        )
+    if errors:
+        raise LiveWorkerConfigurationError(" ".join(errors))
 
     database = database_factory(settings.database_url)
     database.create_schema()
@@ -66,10 +75,9 @@ def build_live_worker_deployment(
         testnet=settings.bybit_testnet,
         live_trading=True,
     )
-    rules = instrument_client_factory(testnet=settings.bybit_testnet).get_linear_rules(
-        settings.bot_symbol
-    )
-    processor = ExchangeEventProcessor(store=store, symbol=settings.bot_symbol)
+    symbol = runtime.strategy.config.symbol.upper()
+    rules = instrument_client_factory(testnet=settings.bybit_testnet).get_linear_rules(symbol)
+    processor = ExchangeEventProcessor(store=store, symbol=symbol)
     stream = stream_factory(
         api_key=settings.bybit_api_key,
         api_secret=settings.bybit_api_secret,
@@ -90,8 +98,17 @@ def build_live_worker_deployment(
         stream=stream,
         store=store,
         interval_seconds=settings.bot_worker_interval_seconds,
+        execution_recovery=ExecutionRecovery(exchange, store, symbol),
+    )
+    store.record_strategy_event(
+        event_type="STRATEGY_CONFIG",
+        symbol=symbol,
+        payload={
+            **configuration_snapshot(settings, runtime),
+            "instrument_rules": {k: str(v) for k, v in vars(rules).items()},
+        },
     )
     return LiveWorkerDeployment(
         worker=worker,
-        lease=WorkerLease(database, settings.bot_symbol),
+        lease=WorkerLease(database, symbol),
     )

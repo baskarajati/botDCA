@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>botDCA Operator Console</title>
+    <link rel="stylesheet" href="/static/console.css" />
+  </head>
+  <body class="route-pending">
+    <header class="topbar">
+      <a class="brand" href="/" data-route="overview" aria-label="botDCA home">
+        <span class="brand-mark" aria-hidden="true">B</span>
+        <span>botDCA</span>
+      </a>
+      <nav aria-label="Console pages">
+        <a href="/" data-route="overview">Overview</a>
+        <a href="/configuration" data-route="configuration">Configuration</a>
+        <a href="/journal" data-route="journal">Journal</a>
+      </nav>
+      <div class="topbar-status">
+        <span id="mode" class="status-text">Loading</span>
+        <span
+          class="lock-mark"
+          aria-label="Sensitive configuration is protected"
+          >Protected</span
+        >
+      </div>
+    </header>
+
+    <main id="top">
+      <div class="page-heading">
+        <div>
+          <p id="page-eyebrow" class="eyebrow">Operator overview</p>
+          <h1 id="page-title" tabindex="-1">Operate one trial basket</h1>
+          <p id="page-description" class="lede">
+            Monitor exchange state, control re-entry, and keep an execution
+            record.
+          </p>
+        </div>
+        <div class="freshness" aria-live="polite">
+          <span>Last refresh</span>
+          <strong id="last-refresh">Waiting for data</strong>
+        </div>
+      </div>
+
+      <div id="notice" class="notice" role="status" hidden></div>
+      <div id="error" class="notice danger" role="alert" hidden></div>
+
+      <section
+        id="basket"
+        class="panel basket-panel"
+        data-page-view="overview"
+        aria-labelledby="basket-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Current basket</p>
+            <h2 id="basket-title">
+              <span id="symbol">—</span>
+              <span id="state" class="state-label">Loading</span>
+            </h2>
+            <p id="basket-description" class="supporting">
+              Reading the latest worker state.
+            </p>
+          </div>
+          <span id="basket-mode" class="mode-chip">—</span>
+        </div>
+
+        <div class="metrics metrics-six">
+          <div class="metric">
+            <span>Average entry</span><strong id="average">—</strong>
+          </div>
+          <div class="metric">
+            <span>Position size</span><strong id="quantity">—</strong>
+          </div>
+          <div class="metric">
+            <span>Unrealized P&amp;L</span><strong id="position-upl">—</strong>
+          </div>
+          <div class="metric">
+            <span>Mark price</span><strong id="mark-price">—</strong>
+          </div>
+          <div class="metric">
+            <span>Take profit</span><strong id="tp">—</strong>
+          </div>
+          <div class="metric">
+            <span>Next DCA</span><strong id="next-dca">—</strong>
+          </div>
+        </div>
+
+        <div class="basket-footer">
+          <div class="basket-context">
+            <span id="risk-message">Waiting for risk state</span>
+            <span>Depth <strong id="depth">—</strong></span>
+            <span>Leverage <strong id="leverage">—</strong></span>
+          </div>
+          <div class="button-row" aria-label="Entry controls">
+            <button id="resume" class="button primary" type="button">
+              Enable entries
+            </button>
+            <button id="pause" class="button secondary" type="button">
+              Pause new entries
+            </button>
+            <button id="close" class="button danger-button" type="button">
+              Close position &amp; pause
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section
+        id="additional-baskets"
+        class="panel additional-baskets"
+        data-page-view="overview"
+        aria-labelledby="additional-baskets-title"
+        hidden
+      >
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">Additional coins</p>
+            <h2 id="additional-baskets-title">Portfolio baskets</h2>
+          </div>
+        </div>
+        <div id="additional-basket-list" class="additional-basket-list"></div>
+      </section>
+
+      <section
+        class="panel"
+        data-page-view="overview"
+        aria-labelledby="capital-title"
+      >
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">Capital &amp; exposure</p>
+            <h2 id="capital-title">Account boundaries</h2>
+          </div>
+          <span id="account-state" class="status-text">Waiting</span>
+        </div>
+        <div class="metrics metrics-six">
+          <div class="metric">
+            <span>Trial reference</span><strong id="trial-equity">—</strong>
+          </div>
+          <div class="metric">
+            <span>Wallet equity</span><strong id="equity">—</strong>
+          </div>
+          <div class="metric">
+            <span>Available balance</span><strong id="available">—</strong>
+          </div>
+          <div class="metric">
+            <span>Used margin</span><strong id="margin">—</strong>
+          </div>
+          <div class="metric">
+            <span>Liquidation estimate</span><strong id="liquidation">—</strong>
+          </div>
+          <div class="metric">
+            <span>Account source</span><strong id="account-source">—</strong>
+          </div>
+        </div>
+      </section>
+
+      <section
+        id="readiness"
+        class="panel"
+        data-page-view="overview"
+        aria-labelledby="readiness-title"
+      >
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">Trial readiness</p>
+            <h2 id="readiness-title">Entry gate</h2>
+          </div>
+          <strong id="readiness-state" class="readiness-state">Checking</strong>
+        </div>
+        <p id="readiness-summary" class="supporting">
+          Live activation stays outside this console.
+        </p>
+        <div id="checks" class="check-grid" aria-live="polite"></div>
+      </section>
+
+      <section
+        id="configuration"
+        class="panel"
+        data-page-view="configuration"
+        aria-labelledby="configuration-title"
+      >
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">Configuration</p>
+            <h2 id="configuration-title">One source of truth</h2>
+            <p class="supporting">
+              Values below are loaded from the server. Strategy slots can be
+              changed while every worker is stopped and every basket is flat.
+            </p>
+          </div>
+          <div class="fingerprint">
+            <span>Config fingerprint</span>
+            <strong id="fingerprint">—</strong>
+          </div>
+        </div>
+
+        <div class="configuration-grid">
+          <article class="config-group auth-group">
+            <p class="group-label">Console access</p>
+            <h3>Operator session</h3>
+            <p class="group-copy">
+              Use the server-issued operator token. It stays in this tab and is
+              cleared when the page closes.
+            </p>
+            <form id="connect-form" class="connect-form">
+              <label for="operator-token">Operator token</label>
+              <input
+                id="operator-token"
+                name="operator-token"
+                type="password"
+                autocomplete="off"
+                placeholder="Enter operator token"
+              />
+              <button class="button primary" type="submit">
+                Connect console
+              </button>
+            </form>
+            <div id="session-active" class="session-active" hidden>
+              <strong>Console connected</strong>
+              <span>The token is held only in page memory.</span>
+            </div>
+          </article>
+
+          <article class="config-group">
+            <p class="group-label">Exchange connection</p>
+            <h3>Bybit credentials</h3>
+            <dl class="config-list">
+              <div>
+                <dt>Environment</dt>
+                <dd id="config-exchange-environment">—</dd>
+              </div>
+              <div>
+                <dt>API key</dt>
+                <dd id="config-api-key">—</dd>
+              </div>
+              <div>
+                <dt>API secret</dt>
+                <dd id="config-api-secret">—</dd>
+              </div>
+              <div>
+                <dt>Account mode</dt>
+                <dd id="config-account-mode">—</dd>
+              </div>
+              <div>
+                <dt>Credential source</dt>
+                <dd id="config-credential-source">—</dd>
+              </div>
+              <div>
+                <dt>Encrypted vault</dt>
+                <dd id="config-credential-vault">—</dd>
+              </div>
+            </dl>
+            <p class="security-note">
+              Credentials are stored on the server. Secrets are never shown in
+              the browser.
+            </p>
+          </article>
+
+          <article class="config-group">
+            <p class="group-label">Strategy</p>
+            <h3>Shared behavior</h3>
+            <dl class="config-list">
+              <div>
+                <dt>Enabled slots</dt>
+                <dd id="config-symbol">—</dd>
+              </div>
+              <div>
+                <dt>Direction</dt>
+                <dd id="config-direction">—</dd>
+              </div>
+              <div>
+                <dt>Leverage</dt>
+                <dd id="config-leverage">—</dd>
+              </div>
+              <div>
+                <dt>Initial margin</dt>
+                <dd id="config-base-margin">—</dd>
+              </div>
+              <div>
+                <dt>Take profit</dt>
+                <dd id="config-tp">—</dd>
+              </div>
+              <div>
+                <dt>Re-entry delay</dt>
+                <dd id="config-reentry">—</dd>
+              </div>
+              <div>
+                <dt>Maximum DCA</dt>
+                <dd id="config-max-dca">—</dd>
+              </div>
+            </dl>
+          </article>
+
+          <article class="config-group">
+            <p class="group-label">Risk limits</p>
+            <h3>Trial boundaries</h3>
+            <dl class="config-list">
+              <div>
+                <dt>Trial reference</dt>
+                <dd id="config-trial-equity">—</dd>
+              </div>
+              <div>
+                <dt>New-order guard</dt>
+                <dd id="config-margin-cap">—</dd>
+              </div>
+              <div>
+                <dt>Equity reserve</dt>
+                <dd id="config-equity-reserve">—</dd>
+              </div>
+              <div>
+                <dt>Minimum balance</dt>
+                <dd id="config-min-balance">—</dd>
+              </div>
+            </dl>
+            <p class="security-note">
+              The guard can block a new entry or DCA. It never closes a
+              position.
+            </p>
+          </article>
+
+          <article class="config-group credential-group">
+            <div class="credential-intro">
+              <p class="group-label">Mainnet credential vault</p>
+              <h3>Validate and store Bybit access</h3>
+              <p class="group-copy">
+                The backend validates permissions on Bybit mainnet, encrypts the
+                credentials, and stores only ciphertext in the VPS volume. This
+                does not start the worker or enable entries.
+              </p>
+              <p id="credential-validation-summary" class="security-note">
+                Waiting for a mounted VPS vault key.
+              </p>
+            </div>
+            <form id="credential-form" class="credential-form">
+              <div class="credential-fields">
+                <label for="bybit-api-key">Bybit API key</label>
+                <input
+                  id="bybit-api-key"
+                  name="bybit-api-key"
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                  placeholder="Enter the mainnet API key"
+                />
+                <label for="bybit-api-secret">Bybit API secret</label>
+                <input
+                  id="bybit-api-secret"
+                  name="bybit-api-secret"
+                  type="password"
+                  autocomplete="new-password"
+                  spellcheck="false"
+                  required
+                  placeholder="Enter the mainnet API secret"
+                />
+                <label for="confirm-mainnet">Confirmation phrase</label>
+                <input
+                  id="confirm-mainnet"
+                  name="confirm-mainnet"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                  placeholder="Type MAINNET"
+                  aria-describedby="credential-requirements"
+                />
+              </div>
+              <div class="credential-submit">
+                <p id="credential-requirements" class="group-copy">
+                  Required: Contract Trade Order and Position, Unified Trading
+                  Account, VPS IP binding, and no Wallet permissions.
+                </p>
+                <button
+                  id="credential-submit"
+                  class="button primary"
+                  type="submit"
+                  disabled
+                >
+                  Validate &amp; store credentials
+                </button>
+                <p id="credential-status" class="form-status" role="status"></p>
+              </div>
+            </form>
+          </article>
+
+          <article class="config-group runtime-group">
+            <div>
+              <p class="group-label">Runtime &amp; storage</p>
+              <h3>Service behavior</h3>
+            </div>
+            <dl class="config-list runtime-list">
+              <div>
+                <dt>Application environment</dt>
+                <dd id="config-app-environment">—</dd>
+              </div>
+              <div>
+                <dt>Live trading</dt>
+                <dd id="config-live-trading">—</dd>
+              </div>
+              <div>
+                <dt>Worker on startup</dt>
+                <dd id="config-worker-start">—</dd>
+              </div>
+              <div>
+                <dt>Worker interval</dt>
+                <dd id="config-worker-interval">—</dd>
+              </div>
+              <div>
+                <dt>Mainnet preflight</dt>
+                <dd id="config-mainnet-preflight">—</dd>
+              </div>
+              <div>
+                <dt>Database backend</dt>
+                <dd id="config-database">—</dd>
+              </div>
+              <div>
+                <dt>Allowed hosts</dt>
+                <dd id="config-allowed-hosts">—</dd>
+              </div>
+            </dl>
+          </article>
+        </div>
+
+        <section class="strategy-slots-block" aria-labelledby="strategy-slots-title">
+          <div class="section-heading compact">
+            <div>
+              <p class="group-label">Trading portfolio</p>
+              <h3 id="strategy-slots-title">Choose up to three coins</h3>
+              <p class="group-copy">
+                Each enabled coin uses the same frozen DCA ladder with its own
+                initial margin. All coins share the same Bybit wallet balance.
+              </p>
+            </div>
+            <strong id="combined-forecast" class="forecast-total">—</strong>
+          </div>
+          <form id="strategy-slots-form">
+            <datalist id="bybit-symbols"></datalist>
+            <div id="strategy-slot-cards" class="strategy-slot-cards"></div>
+            <div id="strategy-slot-errors" class="form-status failure" role="alert"></div>
+            <div class="strategy-slot-actions">
+              <p class="group-copy">
+                Forecasts are planning estimates. They never reserve funds,
+                stop a basket, or trigger a forced close.
+              </p>
+              <button id="strategy-slots-save" class="button primary" type="submit" disabled>
+                Save strategy slots
+              </button>
+              <p id="strategy-slots-status" class="form-status" role="status"></p>
+            </div>
+          </form>
+          <div class="table-wrap forecast-wrap">
+            <table>
+              <caption>DCA margin forecast for enabled coins</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Coin</th>
+                  <th scope="col">Level</th>
+                  <th scope="col">Trigger drop</th>
+                  <th scope="col">Size</th>
+                  <th scope="col">Added margin</th>
+                  <th scope="col">Cumulative margin</th>
+                </tr>
+              </thead>
+              <tbody id="strategy-forecast"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <div class="ladder-block">
+          <div>
+            <p class="group-label">DCA ladder</p>
+            <h3>Configured levels</h3>
+          </div>
+          <div
+            id="ladder"
+            class="ladder"
+            aria-label="Configured DCA ladder"
+          ></div>
+        </div>
+      </section>
+
+      <section
+        class="panel"
+        data-page-view="overview"
+        aria-labelledby="worker-title"
+      >
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">Worker &amp; private stream</p>
+            <h2 id="worker-title">Runtime health</h2>
+          </div>
+          <span id="worker-error" class="status-text">No worker error</span>
+        </div>
+        <div class="metrics metrics-four">
+          <div class="metric">
+            <span>Worker</span><strong id="worker">—</strong>
+          </div>
+          <div class="metric">
+            <span>Private stream</span><strong id="stream">—</strong>
+          </div>
+          <div class="metric">
+            <span>Last synchronization</span><strong id="sync">—</strong>
+          </div>
+          <div class="metric">
+            <span>Exchange environment</span><strong id="environment">—</strong>
+          </div>
+        </div>
+      </section>
+
+      <section
+        id="journal"
+        class="panel journal-panel"
+        data-page-view="journal"
+        aria-labelledby="journal-title"
+      >
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">Execution journal</p>
+            <h2 id="journal-title">Verified exchange fills</h2>
+          </div>
+          <div class="journal-actions">
+            <span id="fill-count">0 records</span>
+            <button id="export" class="button text-button" type="button">
+              Export CSV
+            </button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Side</th>
+                <th scope="col">Quantity</th>
+                <th scope="col">Price</th>
+                <th scope="col">Fee</th>
+                <th scope="col">Order</th>
+              </tr>
+            </thead>
+            <tbody id="fills">
+              <tr>
+                <td colspan="6" class="empty-row">
+                  Loading execution journal.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section
+        class="panel activity-panel"
+        data-page-view="journal"
+        aria-labelledby="activity-title"
+      >
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">Operator activity</p>
+            <h2 id="activity-title">Recent controls</h2>
+          </div>
+        </div>
+        <div id="activity" class="activity-list">
+          <p class="empty-copy">No operator action recorded in this session.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>botDCA operator console</span>
+      <span>Live activation stays outside this console.</span>
+    </footer>
+
+    <dialog id="close-dialog">
+      <form method="dialog" class="dialog-card">
+        <p class="eyebrow">Irreversible market action</p>
+        <h2>Close the position and pause?</h2>
+        <p>
+          This requests a reduce-only market close, then keeps new entries
+          paused. Confirm the symbol before continuing.
+        </p>
+        <label for="confirm-symbol">Type the configured symbol</label>
+        <input id="confirm-symbol" autocomplete="off" />
+        <div class="button-row">
+          <button class="button secondary" value="cancel">Cancel</button>
+          <button
+            id="confirm-close"
+            class="button danger-button"
+            value="confirm"
+          >
+            Close position
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/static/console.js" defer></script>
+  </body>
+</html>

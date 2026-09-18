@@ -1,6 +1,6 @@
 # botDCA
 
-Long-only geometric DCA trading bot for Bybit USDT perpetuals.
+Long-only geometric DCA trading bot for up to three Bybit USDT perpetuals.
 
 ## Status
 
@@ -26,7 +26,8 @@ Default DCA steps are expressed as percentage drops from the current weighted av
 7. 5.53% / size x1.466
 8. 5.11% / size x1.467
 
-These remain configurable reconstructed estimates until validation against the full trader export is complete.
+These are frozen reconstructed estimates for the initial trial, not a proven optimum.
+The original entry signal and DCA9–10 behavior remain unidentified; runtime stops at DCA8.
 
 ## Risk controls
 
@@ -78,7 +79,142 @@ botdca-compare-export \
   --match-window-seconds 300
 ```
 
-The comparator reports completed-cycle match rate, closing-time error, exit-price error, DCA-depth error, and exact DCA-depth match percentage. Use `--timezone-offset-minutes` when the export timestamps are not UTC.
+The comparator reports completed-cycle match rate, closing-time error, exit-price error, DCA-depth error, and exact DCA-depth match percentage. Use `--timezone` for the export's named timezone. `--timezone-offset-minutes` remains available for legacy fixed-offset files.
+
+## Build the historical evidence baseline
+
+Keep the private trader CSV outside the repository. Before calibration, profile its cycle
+structure and align it with exact Bybit one-minute candles:
+
+```bash
+botdca-profile-export \
+  --csv /path/to/bybit-trader-export.csv \
+  --symbol HYPEUSDT \
+  --timezone Europe/Rome \
+  --output /private/path/HYPEUSDT.trader-profile.json \
+  > /tmp/HYPEUSDT-profile-stdout.json
+```
+
+The command:
+
+- converts CSV timestamps through the named timezone and reports UTC output
+- merges only narrowly matching close fragments instead of relying on exact close strings
+- reports leverage/TP regimes, DCA depths, sizing multipliers, re-entry gaps, and holding times
+- caches public Bybit candles under `~/.cache/botdca/marketdata`
+- checks final weighted-average entries and closing prices against their one-minute ranges
+
+The aggregate report does not contain the private CSV rows. One-minute candles bound possible
+fills but do not establish exact second-level execution prices or intrabar ordering. Trigger
+midpoints are diagnostics, not calibrated strategy parameters. Historical master sizing is
+reported only as an approximate proxy because the export does not contain individual fill
+prices, wallet equity, available balance, funding payments, or cross-margin liquidation state.
+
+Use `--skip-market-data` for a CSV-only structural profile. Use
+`--refresh-market-data` to replace the exact-window public candle cache.
+
+## Validate strategy behavior
+
+After the evidence baseline is clean, run both anchored-cycle and continuous validation with
+the same `DcaStrategy` used by runtime:
+
+```bash
+botdca-validate-strategy \
+  --csv /path/to/bybit-trader-export.csv \
+  --symbol HYPEUSDT \
+  --timezone Europe/Rome \
+  --path both \
+  --match-window-seconds 300 \
+  --reentry-delay-seconds 48 \
+  --output /private/path/HYPEUSDT.validation.json \
+  > /tmp/HYPEUSDT-validation-stdout.json
+```
+
+Anchored validation starts one simulation at each observed first-entry minute and disables
+automatic re-entry. This isolates DCA depth, weighted-average entry, TP price, and close-time
+behavior. Continuous validation runs autonomously inside each detected regime and tests cycle
+matching plus re-entry timing. Regime boundaries reset replay state rather than silently
+changing parameters inside an open position.
+
+Every run reports the current uniform baseline and an observed-regime scenario. The latter
+changes only leverage and TP to the regime's observed values; it retains the baseline DCA
+ladder. Observed-regime results are in-sample diagnostics, not calibrated holdout evidence.
+Both low-first and high-first candle paths are reported because one-minute OHLC data does not
+identify intrabar ordering or the exact second-level initial fill.
+
+## Identify entry timing and sparse deep DCA behavior
+
+Use the aggregate export and cached one-minute candles to test entry/re-entry hypotheses and
+to keep the few observed DCA9-DCA10 cycles separated by leverage/TP regime:
+
+```bash
+botdca-identify-entry \
+  --csv /path/to/bybit-trader-export.csv \
+  --symbol HYPEUSDT \
+  --timezone Europe/Rome \
+  --output /private/path/HYPEUSDT.entry-identification.json \
+  > /tmp/HYPEUSDT-entry-identification-stdout.json
+```
+
+The timing comparison learns a scheduler phase from the first 70% of transitions and evaluates
+it on the final 30%. It compares a literal fixed-delay model with an attempt near the next
+one-minute candle boundary and reports skipped-minute behavior separately. DCA trigger evidence
+is bounded by each entry-minute candle and the exported final weighted-average entry; it does
+not invent unavailable individual fill prices.
+
+Sparse deep levels are reported by regime and never merged into the runtime ladder. The command
+is an identification tool only: it does not update runtime defaults or enable live trading.
+
+## Run bounded walk-forward calibration
+
+Calibration is intentionally narrower than strategy discovery. It uses the first 70% of each
+regime with at least 30 completed cycles for parameter selection and keeps the final 30% as an
+untouched chronological holdout:
+
+```bash
+botdca-calibrate-strategy \
+  --csv /path/to/bybit-trader-export.csv \
+  --symbol HYPEUSDT \
+  --timezone Europe/Rome \
+  --path both \
+  --output /private/path/HYPEUSDT.calibration.json \
+  > /tmp/HYPEUSDT-calibration-stdout.json
+```
+
+The search can adjust TP, sufficiently supported DCA trigger drops, and re-entry delay within
+documented bounds. DCA quantity multipliers remain fixed. Small regimes are skipped, both
+intrabar paths are retained, and validation failures are reported rather than used for further
+tuning. The command produces research evidence only; it does not update runtime defaults or
+enable live trading.
+
+## Analyze economics and tail risk
+
+Use the saved calibration report to compare baseline and calibrated replay economics on the
+regimes with enough evidence:
+
+```bash
+botdca-analyze-risk \
+  --csv /path/to/bybit-trader-export.csv \
+  --calibration-report /private/path/HYPEUSDT.calibration.json \
+  --symbol HYPEUSDT \
+  --timezone Europe/Rome \
+  --path both \
+  --fee-rate 0.00055 \
+  --maintenance-margin-rate 0.005 \
+  --output /private/path/HYPEUSDT.risk.json \
+  > /tmp/HYPEUSDT-risk-stdout.json
+```
+
+The report separates entry fees, exit fees, gross realized P&L, and net realized P&L. It also
+reports peak strategy margin, peak position notional, worst floating P&L, drawdown, cycle
+duration, minute-resolution underwater/recovery time, MAE/MFE, and DCA-depth frequency.
+Funding is excluded unless a timestamped `FundingModel` is supplied; the report never inserts
+invented historical rates.
+
+Tail stress exhausts the runtime DCA ladder and then shocks price another 5%, 10%, and 20% from
+the final DCA fill. Its account-equity figure is a configurable reserve proxy, not an exact Bybit
+UTA liquidation value. See
+[`docs/reports/2026-09-17-hypeusdt-validation-summary.md`](docs/reports/2026-09-17-hypeusdt-validation-summary.md)
+for the current research result and limitations.
 
 ## Live orchestration
 
@@ -106,29 +242,59 @@ The FastAPI root (`/`) serves an operations dashboard showing:
 - strategy margin cap and account reserve floor
 - account-aware next-DCA permission and reason
 
-Controls include resume, pause, and close-position-and-pause.
+Controls include guarded resume, pause, and confirmed close-position-and-pause requests.
+The console is split into Overview (`/`), Configuration (`/configuration`) and Journal
+(`/journal`). It shows worker/private-stream freshness, readiness checks, recent actual
+fills, CSV export and a read-only configuration fingerprint. Operator authentication
+is required for controls and credentialed account data. Client-side page navigation
+keeps the token in memory; reload requires reconnecting from Configuration.
+
+Configuration persists three strategy slots in the database. Each enabled slot
+selects a unique Bybit linear USDT perpetual and its own initial (DCA0) margin.
+The UI forecasts added and cumulative margin through DCA8 for each coin and the
+combined portfolio. Forecasts are informational: they never reserve funds,
+close a position or define a maximum loss. All enabled coins share the same
+Unified Account equity and reserve floor. Live workers make account/order
+decisions under one shared portfolio lock, while controls and worker leases
+remain symbol-specific.
+Stale data disables resume/close; locking the console does not pause trading.
+
+On a VPS, the Configuration page can validate a Bybit mainnet key and store its
+authenticated ciphertext in a dedicated persistent volume. The master encryption
+key, operator token and database URL are mounted as Docker secrets. The browser
+does not retain or redisplay the Bybit values, and successful credential storage
+does not start the worker or enable entries. Use only a private HTTPS path; the
+VPS Compose profile keeps the API port on loopback.
+
+`BOT_TRIAL_EQUITY_USDT=100` is the agreed trial reference, not an account balance
+or maximum-loss limit. Preview places no orders and is not a paper-trading simulator.
+See [the trial runbook](docs/TRIAL_RUNBOOK.md) for setup, data limitations and activation gates.
 
 ## Local development
 
 ```bash
-cp .env.example .env
+# Only copy if .env does not already exist; preserve existing configuration.
+cp -n .env.example .env
 docker compose up --build
 ```
 
 Dashboard/API: `http://localhost:8000`
 
+For the hardened VPS layout, follow [the trial runbook](docs/TRIAL_RUNBOOK.md)
+and layer `docker-compose.vps.yml` over the base Compose file. Do not put Bybit
+credentials in `.env`.
+
 ```bash
 curl http://localhost:8000/health
-curl http://localhost:8000/api/v1/bot/status
-curl http://localhost:8000/api/v1/account/status
+# Account/API routes require X-Operator-Token when configured.
 ```
 
 Run tests:
 
 ```bash
-pip install -e '.[dev]'
-ruff check botdca tests
-pytest -q
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/ruff check botdca tests
+.venv/bin/python -m pytest -q
 ```
 
 ## Safety defaults
@@ -141,10 +307,20 @@ pytest -q
 - unexpected short positions are refused
 - DCA planning is bounded by depth, strategy-margin, and account-reserve limits
 - worker errors fail closed by pausing re-entry
+- strong operator token, PostgreSQL and trial-reference checks gate live startup
+- mainnet additionally requires explicit operator preflight acknowledgement
+- hedge-mode exposure is refused rather than incorrectly treated as flat
+- execution history recovery precedes reconciliation on startup and reconnect
 
 ## Remaining before production use
 
-1. Validate minute-level replay directly against the complete exported HYPE trader history
-2. Run operator-approved end-to-end reconciliation tests against Bybit testnet or demo
-3. Validate partial-fill behavior with recorded exchange fixtures and testnet fault injection
-4. Finalize VPS/Tailscale deployment and operational runbook
+1. Verify Docker/PostgreSQL runtime and durable single-worker supervision on the target host
+2. Complete private HTTPS/VPS deployment checks and validate the restricted mainnet key
+3. Rehearse interruption/restart recovery without enabling entries
+4. Obtain explicit approval for the exact funded account and first mainnet activation
+5. Validate partial fills, recovery and close confirmation with the smallest approved live trial
+
+No additional strategy optimization is planned before this evidence-collection trial.
+Skipping testnet removes a valuable integration layer: the first order-path proof
+will use real funds. Local tests and a usable UI do not establish exchange
+readiness or profitability.
