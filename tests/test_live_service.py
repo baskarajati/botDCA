@@ -515,3 +515,45 @@ def test_a_flat_position_resolves_protection_and_max_dca_alerts() -> None:
     assert service.sync().status == "flat_paused"
 
     assert store.open_alert_conditions(["HYPEUSDT"]) == []
+
+
+def _closed_basket_service(*, pause_after_cycle: bool):
+    strategy = DcaStrategy(StrategyConfig())
+    strategy.resume()
+    store = _store()
+    _record_entry_fill(store)
+    exchange = FakeExchange(_long(), _account())
+    service = LiveStrategyService(
+        strategy=strategy,
+        exchange=exchange,
+        store=store,
+        rules=_rules(),
+        risk_limits=RiskLimits(),
+        reentry_delay_seconds=0,
+        pause_after_cycle=pause_after_cycle,
+    )
+    service.sync()  # the basket is open and protected
+    assert strategy.current_cycle is not None
+    exchange.position = _flat()  # the take profit filled
+    return strategy, store, service, exchange
+
+
+def test_trial_pause_after_cycle_stops_re_entry_when_a_basket_closes() -> None:
+    from botdca.domain import BotState
+
+    strategy, store, service, exchange = _closed_basket_service(pause_after_cycle=True)
+
+    assert service.sync().status == "flat_paused"
+    assert service.sync().status == "flat_paused"
+
+    assert strategy.state == BotState.PAUSED
+    assert not any(call[0] == "open_long" for call in exchange.calls)
+    events = [row["event_type"] for row in store.recent_events("HYPEUSDT", limit=10)]
+    assert events.count("TRIAL_PAUSED_AFTER_CYCLE") == 1
+
+
+def test_without_pause_after_cycle_the_strategy_re_enters() -> None:
+    _strategy, _unused_store, service, exchange = _closed_basket_service(pause_after_cycle=False)
+
+    assert service.sync().status == "entry_submitted"
+    assert any(call[0] == "open_long" for call in exchange.calls)

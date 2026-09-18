@@ -101,3 +101,14 @@ def test_trial_mode_only_ever_tightens_limits() -> None:
     )
     assert tighter_real.effective_max_dca_level == 3
     assert tighter_real.effective_max_total_bot_margin_usdt == 10
+
+
+def test_pause_after_cycle_only_applies_in_trial_mode() -> None:
+    assert Settings(_env_file=None, BOT_TRIAL_MODE=True).effective_pause_after_cycle is True
+    assert Settings(_env_file=None, BOT_TRIAL_MODE=False).effective_pause_after_cycle is False
+    assert (
+        Settings(
+            _env_file=None, BOT_TRIAL_MODE=True, BOT_TRIAL_PAUSE_AFTER_CYCLE=False
+        ).effective_pause_after_cycle
+        is False
+    )

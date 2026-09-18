@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     bot_trial_manual_resume_after_restart: bool = Field(
         default=True, alias="BOT_TRIAL_MANUAL_RESUME_AFTER_RESTART"
     )
+    #: Pause instead of re-entering when a basket closes, so a trial runs one
+    #: cycle per operator Resume.
+    bot_trial_pause_after_cycle: bool = Field(
+        default=True, alias="BOT_TRIAL_PAUSE_AFTER_CYCLE"
+    )
 
     # -- alerting ---------------------------------------------------------
     bot_alert_webhook_url: str = Field(default="", alias="BOT_ALERT_WEBHOOK_URL", repr=False)
@@ -175,6 +180,11 @@ class Settings(BaseSettings):
                 self.bot_trial_max_portfolio_margin_usdt,
             )
         return self.bot_max_total_bot_margin_usdt
+
+    @property
+    def effective_pause_after_cycle(self) -> bool:
+        """Trial mode may stop re-entry after each closed basket; live mode never does."""
+        return self.bot_trial_mode and self.bot_trial_pause_after_cycle
 
     @property
     def effective_max_active_symbols(self) -> int:

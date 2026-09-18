@@ -120,3 +120,39 @@ def test_worker_reconnects_stream_before_sync() -> None:
         "LIVE_STREAM_RECONNECTED",
         "LIVE_SYNC",
     ]
+
+
+def test_a_failed_stream_message_alerts_once_and_recovers_over_rest_at_once() -> None:
+    from botdca.alerts import AlertDispatcher, MemoryAlertSink
+
+    service = FakeService()
+    stream = FakeStream()
+    stream.start()
+    stream.failed_messages = 0
+    stream.last_message_error = None
+    recoveries: list[int] = []
+    sink = MemoryAlertSink()
+    worker = LiveWorker(
+        service=service,
+        stream=stream,
+        store=FakeStore(),
+        interval_seconds=1.0,
+        execution_recovery=lambda: recoveries.append(1),
+        alerts=AlertDispatcher([sink]),
+    )
+    worker.run_once()  # first run always recovers
+    assert len(recoveries) == 1
+
+    stream.failed_messages = 2
+    stream.last_message_error = "execution: DataError: integer out of range"
+    worker.run_once()
+
+    assert len(recoveries) == 2  # immediately, not after the 30 s cadence
+    alerts = sink.recent()
+    assert [alert["condition"] for alert in alerts] == ["stream_message_failed"]
+    assert alerts[0]["severity"] == "warning"
+    assert alerts[0]["context"]["last_error"].startswith("execution: DataError")
+
+    worker.run_once()  # no new failures: no alert, no extra recovery
+    assert len(recoveries) == 2
+    assert len(sink.recent()) == 1
