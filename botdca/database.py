@@ -5,7 +5,17 @@ from hashlib import sha256
 from threading import Lock
 from typing import Any, ClassVar
 
-from sqlalchemy import JSON, Boolean, Float, Integer, String, create_engine, inspect, text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    Float,
+    Integer,
+    String,
+    create_engine,
+    inspect,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -36,7 +46,7 @@ class ExecutionRecord(Base):
     qty: Mapped[float] = mapped_column(Float)
     fee: Mapped[float] = mapped_column(Float)
     realized_pnl: Mapped[float] = mapped_column(Float)
-    execution_time_ms: Mapped[int] = mapped_column(index=True)
+    execution_time_ms: Mapped[int] = mapped_column(BigInteger, index=True)
     recorded_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
@@ -56,7 +66,7 @@ class OrderStateRecord(Base):
     reduce_only: Mapped[bool] = mapped_column(Boolean, default=False)
     reject_reason: Mapped[str] = mapped_column(String(128), default="")
     cancel_type: Mapped[str] = mapped_column(String(128), default="")
-    updated_time_ms: Mapped[int] = mapped_column(index=True)
+    updated_time_ms: Mapped[int] = mapped_column(BigInteger, index=True)
     recorded_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
@@ -73,7 +83,7 @@ class PositionSnapshotRecord(Base):
     liquidation_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     unrealized_pnl: Mapped[float] = mapped_column(Float)
     position_idx: Mapped[int] = mapped_column(Integer)
-    creation_time_ms: Mapped[int] = mapped_column(index=True)
+    creation_time_ms: Mapped[int] = mapped_column(BigInteger, index=True)
     recorded_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
@@ -128,6 +138,15 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str, str], ...] = (
     ("strategy_slots", "activation_status", "VARCHAR(32)", "'draft'"),
 )
 
+#: Exchange millisecond timestamps (about 1.8e12) overflow a 32-bit INTEGER.
+#: The first releases created these columns as INTEGER, which only SQLite
+#: tolerated. Each entry is (table, column) and is widened to BIGINT in place.
+_BIGINT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("executions", "execution_time_ms"),
+    ("order_states", "updated_time_ms"),
+    ("position_snapshots", "creation_time_ms"),
+)
+
 
 class Database:
     def __init__(self, url: str) -> None:
@@ -141,6 +160,7 @@ class Database:
     def create_schema(self) -> None:
         Base.metadata.create_all(self.engine)
         self.apply_additive_migrations()
+        self.apply_bigint_migrations()
 
     def apply_additive_migrations(self) -> None:
         """Add columns introduced after a table already existed.
@@ -162,6 +182,26 @@ class Database:
                 if default != "NULL":
                     clause += f" DEFAULT {default}"
                 connection.execute(text(clause))
+
+    def apply_bigint_migrations(self) -> None:
+        """Widen millisecond columns created as 32-bit INTEGER to BIGINT.
+
+        Widening is lossless: every INTEGER value fits in BIGINT. SQLite stores
+        every integer as 64-bit already, so only PostgreSQL needs the change.
+        """
+        if self.engine.dialect.name != "postgresql":
+            return
+        inspector = inspect(self.engine)
+        existing_tables = set(inspector.get_table_names())
+        with self.engine.begin() as connection:
+            for table, column in _BIGINT_COLUMNS:
+                if table not in existing_tables:
+                    continue
+                types = {row["name"]: row["type"] for row in inspector.get_columns(table)}
+                if column in types and not isinstance(types[column], BigInteger):
+                    connection.execute(
+                        text(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE BIGINT")
+                    )
 
 
 class WorkerLease:
