@@ -344,7 +344,11 @@ class LiveStrategyService:
             self.strategy,
             self.rules,
             risk_limits=self.risk_limits,
-            account_snapshot=account,
+            # With a coordinator configured, account-level reserve is evaluated
+            # once, across every symbol, during portfolio authorization. Doing it
+            # per symbol here as well would double-count the same capital and
+            # would not see other symbols' pending reservations.
+            account_snapshot=None if self.coordinator is not None else account,
         )
 
         cycle = self.strategy.current_cycle
