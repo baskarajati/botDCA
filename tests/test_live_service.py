@@ -557,3 +557,25 @@ def test_without_pause_after_cycle_the_strategy_re_enters() -> None:
 
     assert service.sync().status == "entry_submitted"
     assert any(call[0] == "open_long" for call in exchange.calls)
+
+
+def test_a_dca0_basket_holds_for_its_take_profit_without_manual_intervention() -> None:
+    from botdca.domain import BasketStatus
+
+    strategy = DcaStrategy(StrategyConfig(dca_steps=()))
+    strategy.resume()
+    store = _store()
+    _record_entry_fill(store)
+    exchange = FakeExchange(_long(), _account())
+    service = _journaled_service(strategy, exchange, store, _Clock())
+
+    result = service.sync()
+
+    assert result.status == "take_profit_only"
+    assert result.take_profit_order is not None
+    assert result.max_dca_reached is False
+    assert result.manual_intervention_required is False
+    assert not any(call[0] == "place_dca_limit" for call in exchange.calls)
+    assert strategy.current_cycle.status == BasketStatus.OPEN
+    assert service.exposure().max_dca_reached is False
+    assert "max_dca_reached" not in store.open_alert_conditions(["HYPEUSDT"])
