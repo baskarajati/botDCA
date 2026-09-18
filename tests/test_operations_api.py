@@ -201,7 +201,18 @@ def test_three_strategy_slots_are_saved_and_create_distinct_runtimes(client, mon
         slot["base_margin_usdt"]
         for slot in status["configuration"]["strategy_slots"]
     ] == [1, 2, 3]
-    assert status["configuration"]["combined_full_ladder_margin_usdt"] > 300
+    slots = status["configuration"]["strategy_slots"]
+    combined = status["configuration"]["combined_full_ladder_margin_usdt"]
+    # The combined figure is the sum of every enabled slot's full-ladder margin,
+    # and a geometric ladder commits far more than the initial margins alone.
+    assert combined == pytest.approx(
+        sum(slot["full_ladder_margin_usdt"] for slot in slots if slot["enabled"])
+    )
+    assert combined > 10 * sum(slot["base_margin_usdt"] for slot in slots if slot["enabled"])
+    assert all(
+        slot["strategy_version"]["version_id"] == "greensynergy-reconstructed-v1"
+        for slot in slots
+    )
     assert client.post("/api/v1/bots/BTCUSDT/resume").json()["state"] == "idle"
     assert client.post("/api/v1/bots/HYPEUSDT/pause").json()["state"] == "paused"
 

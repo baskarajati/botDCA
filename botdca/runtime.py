@@ -4,9 +4,12 @@ from dataclasses import dataclass
 from threading import RLock
 
 from botdca.config import Settings
-from botdca.domain import BotState
+from botdca.domain import BasketStatus, BotState
+from botdca.portfolio import PortfolioGuards
 from botdca.risk import RiskLimits, committed_margin_usdt, evaluate_next_dca
-from botdca.strategy import DcaStrategy, StrategyConfig
+from botdca.sizing import InitialAllocation, SizingMode
+from botdca.strategy import DcaStrategy, StrategyConfig, strategy_config_from_version
+from botdca.strategy_version import get_strategy_version
 
 
 @dataclass
@@ -29,6 +32,11 @@ class RuntimeSnapshot:
     next_dca_allowed: bool
     projected_margin_after_next_dca_usdt: float
     dca_blocked_reason: str | None
+    strategy_version_id: str | None = None
+    basket_status: str = str(BasketStatus.FLAT)
+    max_dca_reached: bool = False
+    sizing_mode: str = str(SizingMode.FIXED_MARGIN_USDT)
+    sizing_value: float = 0.0
 
 
 class BotRuntime:
@@ -39,6 +47,8 @@ class BotRuntime:
         symbol: str | None = None,
         base_margin_usdt: float | None = None,
         lock: RLock | None = None,
+        allocation: InitialAllocation | None = None,
+        strategy_version_id: str | None = None,
     ) -> None:
         self.settings = settings
         configured_symbol = (symbol or settings.bot_symbol).upper()
@@ -47,19 +57,48 @@ class BotRuntime:
             if base_margin_usdt is None
             else base_margin_usdt
         )
-        self.strategy = DcaStrategy(
-            StrategyConfig(
+        configured_allocation = allocation or InitialAllocation(
+            SizingMode.FIXED_MARGIN_USDT, configured_base_margin
+        )
+        version_id = strategy_version_id or settings.bot_strategy_version_id
+        try:
+            self.strategy_version = get_strategy_version(version_id)
+        except KeyError:
+            self.strategy_version = None
+
+        if self.strategy_version is not None:
+            config = strategy_config_from_version(
+                self.strategy_version,
+                symbol=configured_symbol,
+                allocation=configured_allocation,
+            )
+            # The live ladder is bounded by the operator's configured maximum,
+            # which trial mode may only tighten. Research-only levels are never
+            # part of `live_dca_steps`, so they cannot be reached from here.
+            config.dca_steps = config.dca_steps[: settings.effective_max_dca_level]
+        else:
+            config = StrategyConfig(
                 symbol=configured_symbol,
                 leverage=settings.bot_leverage,
                 base_margin_usdt=configured_base_margin,
                 tp_percent=settings.bot_tp_percent,
+                allocation=configured_allocation,
             )
-        )
+        self.strategy = DcaStrategy(config)
         self.risk_limits = RiskLimits(
-            max_dca_level=settings.bot_max_dca_level,
+            max_dca_level=settings.effective_max_dca_level,
             max_strategy_margin_usdt=settings.bot_max_strategy_margin_usdt,
             min_available_balance_usdt=settings.bot_min_available_balance_usdt,
             min_available_equity_ratio=settings.bot_min_available_equity_ratio,
+        )
+        self.portfolio_guards = PortfolioGuards(
+            max_total_bot_margin_usdt=settings.effective_max_total_bot_margin_usdt,
+            max_total_bot_notional_usdt=settings.bot_max_total_bot_notional_usdt,
+            min_available_balance_usdt=settings.bot_min_available_balance_usdt,
+            min_available_equity_ratio=settings.bot_min_available_equity_ratio,
+            deep_dca_level=settings.bot_deep_dca_level,
+            max_simultaneous_deep_baskets=settings.bot_max_simultaneous_deep_baskets,
+            max_total_floating_loss_usdt=settings.bot_max_total_floating_loss_usdt,
         )
         self._lock = lock or RLock()
 
@@ -75,7 +114,7 @@ class BotRuntime:
             return RuntimeSnapshot(
                 state=self.strategy.state,
                 symbol=self.strategy.config.symbol,
-                leverage=self.settings.bot_leverage,
+                leverage=self.strategy.config.leverage,
                 live_trading=self.settings.bot_live_trading,
                 cycle_id=cycle.id if cycle else None,
                 average_entry=cycle.average_entry if cycle else None,
@@ -91,6 +130,15 @@ class BotRuntime:
                 next_dca_allowed=decision.allowed,
                 projected_margin_after_next_dca_usdt=decision.projected_margin_usdt,
                 dca_blocked_reason=decision.reason,
+                strategy_version_id=(
+                    cycle.strategy_version_id
+                    if cycle is not None
+                    else self.strategy.config.strategy_version_id
+                ),
+                basket_status=str(cycle.status if cycle else BasketStatus.FLAT),
+                max_dca_reached=bool(cycle and cycle.at_max_dca),
+                sizing_mode=str(self.strategy.config.initial_allocation.mode),
+                sizing_value=self.strategy.config.initial_allocation.value,
             )
 
     def resume(self) -> RuntimeSnapshot:

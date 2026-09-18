@@ -6,8 +6,12 @@ from math import isfinite
 
 from sqlalchemy import select
 
+from botdca.activation import ActivationStatus
 from botdca.database import Database, StrategySlotRecord
 from botdca.domain import DEFAULT_DCA_STEPS, DcaStep
+from botdca.forecast import forecast_symbol
+from botdca.sizing import InitialAllocation, SizingMode
+from botdca.strategy_version import DEFAULT_STRATEGY_VERSION_ID, STRATEGY_VERSIONS
 
 MAX_STRATEGY_SLOTS = 3
 SYMBOL_PATTERN = re.compile(r"^[A-Z0-9]{2,24}USDT$")
@@ -15,17 +19,49 @@ SYMBOL_PATTERN = re.compile(r"^[A-Z0-9]{2,24}USDT$")
 
 @dataclass(frozen=True, slots=True)
 class StrategySlot:
+    """One symbol's participation in the shared strategy family.
+
+    All enabled slots normally reference the SAME strategy version. What varies
+    per symbol is the starting allocation, not the strategy logic.
+
+    `base_margin_usdt` is retained as the fixed-margin allocation value so
+    existing configurations and callers keep working. When `sizing_mode` is
+    `FIXED_BASE_QUANTITY`, `sizing_value` holds the base quantity instead and
+    `base_margin_usdt` is only a display fallback.
+    """
+
     slot: int
     enabled: bool
     symbol: str
     base_margin_usdt: float
+    sizing_mode: SizingMode = SizingMode.FIXED_MARGIN_USDT
+    sizing_value: float | None = None
+    strategy_version_id: str = DEFAULT_STRATEGY_VERSION_ID
+    activation_status: ActivationStatus = ActivationStatus.DRAFT
+
+    @property
+    def allocation(self) -> InitialAllocation:
+        value = (
+            self.sizing_value
+            if self.sizing_value is not None
+            else self.base_margin_usdt
+        )
+        return InitialAllocation(mode=self.sizing_mode, value=value)
 
     def normalized(self) -> StrategySlot:
+        mode = SizingMode(self.sizing_mode)
+        value = self.sizing_value if self.sizing_value is not None else self.base_margin_usdt
         return StrategySlot(
             slot=self.slot,
             enabled=self.enabled,
             symbol=self.symbol.strip().upper(),
-            base_margin_usdt=self.base_margin_usdt,
+            base_margin_usdt=(
+                value if mode is SizingMode.FIXED_MARGIN_USDT else self.base_margin_usdt
+            ),
+            sizing_mode=mode,
+            sizing_value=value,
+            strategy_version_id=self.strategy_version_id,
+            activation_status=ActivationStatus(self.activation_status),
         )
 
 
@@ -35,6 +71,10 @@ def default_strategy_slots(symbol: str, base_margin_usdt: float) -> tuple[Strate
         StrategySlot(2, False, "BTCUSDT", base_margin_usdt),
         StrategySlot(3, False, "ETHUSDT", base_margin_usdt),
     )
+
+
+def slot_strategy_versions(slots: tuple[StrategySlot, ...]) -> set[str]:
+    return {slot.strategy_version_id for slot in slots if slot.enabled}
 
 
 def validate_strategy_slots(slots: list[StrategySlot] | tuple[StrategySlot, ...]) -> tuple[StrategySlot, ...]:
@@ -47,10 +87,21 @@ def validate_strategy_slots(slots: list[StrategySlot] | tuple[StrategySlot, ...]
     enabled_symbols: set[str] = set()
     enabled_count = 0
     for slot in normalized:
-        if not isfinite(slot.base_margin_usdt) or slot.base_margin_usdt <= 0:
-            raise ValueError(f"Slot {slot.slot} initial margin must be greater than zero.")
-        if slot.base_margin_usdt > 1_000_000:
-            raise ValueError(f"Slot {slot.slot} initial margin is unreasonably large.")
+        value = slot.sizing_value if slot.sizing_value is not None else slot.base_margin_usdt
+        unit = (
+            "initial margin"
+            if slot.sizing_mode is SizingMode.FIXED_MARGIN_USDT
+            else "initial quantity"
+        )
+        if not isfinite(value) or value <= 0:
+            raise ValueError(f"Slot {slot.slot} {unit} must be greater than zero.")
+        if value > 1_000_000:
+            raise ValueError(f"Slot {slot.slot} {unit} is unreasonably large.")
+        if slot.strategy_version_id not in STRATEGY_VERSIONS:
+            raise ValueError(
+                f"Slot {slot.slot} references unknown strategy version "
+                f"{slot.strategy_version_id}."
+            )
         if not SYMBOL_PATTERN.fullmatch(slot.symbol):
             raise ValueError(
                 f"Slot {slot.slot} symbol must be a USDT perpetual such as HYPEUSDT."
@@ -128,8 +179,16 @@ def serialized_slot(
     leverage: int,
     dca_steps: tuple[DcaStep, ...] = DEFAULT_DCA_STEPS,
     max_dca_level: int | None = None,
+    reference_price: float | None = None,
 ) -> dict:
     result = asdict(slot)
+    result["sizing_mode"] = str(slot.sizing_mode)
+    result["activation_status"] = str(slot.activation_status)
+    result["allocation"] = slot.allocation.describe()
+
+    version = STRATEGY_VERSIONS.get(slot.strategy_version_id)
+    result["strategy_version"] = version.describe() if version is not None else None
+
     forecast = margin_forecast(
         slot.base_margin_usdt,
         leverage=leverage,
@@ -138,6 +197,24 @@ def serialized_slot(
     )
     result["margin_forecast"] = forecast
     result["full_ladder_margin_usdt"] = forecast[-1]["cumulative_margin_usdt"]
+
+    if version is not None:
+        # Ladder forecast honouring this slot's actual sizing mode, including the
+        # research-only levels, which are flagged and never traded live.
+        ladder = forecast_symbol(
+            symbol=slot.symbol,
+            version=version,
+            allocation=slot.allocation,
+            reference_price=reference_price or 100.0,
+        )
+        result["ladder_forecast"] = ladder.describe()
+        live_level = min(version.max_live_dca_level, len(ladder.rows) - 1)
+        result["live_ladder_margin_usdt"] = ladder.row_at(live_level).cumulative_margin_usdt
+        if slot.sizing_mode is SizingMode.FIXED_BASE_QUANTITY:
+            # For fixed quantity the USDT figures depend on price, so the
+            # normalized margin_forecast above is not meaningful here.
+            result["full_ladder_margin_usdt"] = result["live_ladder_margin_usdt"]
+            result["forecast_reference_price"] = ladder.reference_price
     return result
 
 
@@ -152,7 +229,20 @@ class StrategySlotStore:
             return default_strategy_slots(default_symbol, default_base_margin_usdt)
         return validate_strategy_slots(
             [
-                StrategySlot(row.slot, row.enabled, row.symbol, row.base_margin_usdt)
+                StrategySlot(
+                    slot=row.slot,
+                    enabled=row.enabled,
+                    symbol=row.symbol,
+                    base_margin_usdt=row.base_margin_usdt,
+                    sizing_mode=SizingMode(row.sizing_mode or SizingMode.FIXED_MARGIN_USDT),
+                    sizing_value=row.sizing_value,
+                    strategy_version_id=(
+                        row.strategy_version_id or DEFAULT_STRATEGY_VERSION_ID
+                    ),
+                    activation_status=ActivationStatus(
+                        row.activation_status or ActivationStatus.DRAFT
+                    ),
+                )
                 for row in rows
             ]
         )
@@ -174,5 +264,9 @@ class StrategySlotStore:
                 row.enabled = slot.enabled
                 row.symbol = slot.symbol
                 row.base_margin_usdt = slot.base_margin_usdt
+                row.sizing_mode = str(slot.sizing_mode)
+                row.sizing_value = slot.allocation.value
+                row.strategy_version_id = slot.strategy_version_id
+                row.activation_status = str(slot.activation_status)
             session.commit()
         return validated
