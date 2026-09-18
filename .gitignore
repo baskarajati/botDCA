@@ -11,3 +11,6 @@ secrets/
 *.egg-info/
 *.trader-profile.json
 .DS_Store
+# Private trader exports and profiler working directories must never be committed.
+*.csv
+bybit-*-past-trader-initiated-trades-*.csv
