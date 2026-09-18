@@ -35,6 +35,7 @@ class AlertCondition(StrEnum):
     WORKER_CRASHED = "worker_crashed"
     WORKER_STALE = "worker_stale"
     PRIVATE_STREAM_DISCONNECTED = "private_stream_disconnected"
+    STREAM_MESSAGE_FAILED = "stream_message_failed"
     RECONCILIATION_FAILED = "reconciliation_failed"
     ORDER_REJECTED = "order_rejected"
     RISK_BLOCKED_ENTRY = "risk_blocked_entry"

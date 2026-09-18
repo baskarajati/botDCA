@@ -1079,6 +1079,7 @@ def portfolio_status() -> dict:
             "max_dca_level": settings.effective_max_dca_level,
             "max_portfolio_margin_usdt": settings.effective_max_total_bot_margin_usdt,
             "manual_resume_after_restart": settings.bot_trial_manual_resume_after_restart,
+            "pause_after_cycle": settings.effective_pause_after_cycle,
         },
         "note": (
             "Every enabled symbol draws on one Bybit Unified Account. Guards are "

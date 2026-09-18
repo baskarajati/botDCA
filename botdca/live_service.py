@@ -67,6 +67,7 @@ class LiveStrategyService:
         alerts: AlertDispatcher | None = None,
         deep_dca_level: int = 5,
         initial_tp_grace_seconds: float = 60.0,
+        pause_after_cycle: bool = False,
     ) -> None:
         if reentry_delay_seconds < 0:
             raise ValueError("reentry_delay_seconds cannot be negative")
@@ -94,6 +95,7 @@ class LiveStrategyService:
         # after a restart a missing TP is always treated as lost protection.
         self.initial_tp_grace_seconds = initial_tp_grace_seconds
         self._entry_submitted_at: float | None = None
+        self.pause_after_cycle = pause_after_cycle
 
     @property
     def symbol(self) -> str:
@@ -196,10 +198,19 @@ class LiveStrategyService:
         ):
             self.alerts.clear(condition, self.symbol)
         was_paused = self.strategy.state == BotState.PAUSED
-        if self.strategy.current_cycle is not None:
+        closed_cycle = self.strategy.current_cycle
+        if closed_cycle is not None:
             self.strategy.mark_closed(realized_pnl_usdt=0.0)
             if was_paused:
                 self.strategy.pause()
+            elif self.pause_after_cycle:
+                self.strategy.pause()
+                self.store.record_strategy_event(
+                    event_type="TRIAL_PAUSED_AFTER_CYCLE",
+                    symbol=self.symbol,
+                    cycle_id=closed_cycle.id,
+                    payload={"reason": "BOT_TRIAL_PAUSE_AFTER_CYCLE; Resume starts one more cycle"},
+                )
 
         if self.strategy.state == BotState.PAUSED:
             self._flat_since = None

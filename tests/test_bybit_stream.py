@@ -70,3 +70,33 @@ def test_private_stream_subscribes_all_reconciliation_topics() -> None:
 
     stream.stop()
     assert websocket.exited is True
+
+
+def test_a_failing_message_is_counted_and_never_reaches_pybit() -> None:
+    class BrokenProcessor:
+        def handle_execution_message(self, message):
+            raise RuntimeError("integer out of range")
+
+        def handle_order_message(self, message):
+            return None
+
+        def handle_position_message(self, message):
+            return None
+
+    stream = BybitPrivateStream(
+        api_key="key",
+        api_secret="secret",
+        testnet=True,
+        processor=BrokenProcessor(),
+        websocket_factory=FakeWebSocket,
+    )
+    stream.start()
+    websocket = FakeWebSocket.last_instance
+
+    # pybit would exit() the socket if this raised.
+    websocket.callbacks["execution"]({"data": []})
+    websocket.callbacks["order"]({"data": []})
+
+    assert stream.failed_messages == 1
+    assert stream.last_message_error == "execution: RuntimeError: integer out of range"
+    assert websocket.exited is False

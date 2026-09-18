@@ -52,6 +52,7 @@ class LiveWorker:
         self.execution_recovery = execution_recovery
         self._last_recovery_at: float | None = None
         self._stream_alerted = False
+        self._seen_stream_failures = 0
 
     @property
     def running(self) -> bool:
@@ -81,8 +82,20 @@ class LiveWorker:
                 AlertCondition.PRIVATE_STREAM_DISCONNECTED, self.service.symbol
             )
             self._stream_alerted = False
+        failures = getattr(self.stream, "failed_messages", 0)
+        missed_messages = failures > self._seen_stream_failures
+        if missed_messages:
+            self._alert(
+                AlertCondition.STREAM_MESSAGE_FAILED,
+                AlertSeverity.WARNING,
+                f"{self.service.symbol} private stream could not process "
+                f"{failures - self._seen_stream_failures} message(s); recovering over REST",
+                last_error=getattr(self.stream, "last_message_error", None),
+            )
+            self._seen_stream_failures = failures
         if self.execution_recovery is not None and (
             reconnected
+            or missed_messages
             or self._last_recovery_at is None
             or monotonic() - self._last_recovery_at >= 30
         ):

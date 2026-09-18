@@ -156,6 +156,7 @@ def build_live_worker_deployment(
         coordinator=coordinator,
         alerts=dispatcher,
         deep_dca_level=settings.bot_deep_dca_level,
+        pause_after_cycle=settings.effective_pause_after_cycle,
     )
     # Register this symbol so portfolio exposure spans every running service.
     registered = getattr(coordinator, "services", None)
