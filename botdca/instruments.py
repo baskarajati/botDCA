@@ -1,10 +1,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
 from pybit.unified_trading import HTTP
+
+#: A quantity reaches these helpers as a float sum of fills, and float sums
+#: drift: 0.90 arrives as 0.8999999999999999, whose ratio to a 0.01 step is
+#: 89.99999999999999. Rounding that down drops a whole step. For a take profit
+#: that leaves part of the position uncovered, and the shortfall is the size of
+#: a step, not of the drift. Absorb noise at this scale before rounding; a
+#: genuinely smaller quantity is far outside it and still rounds down.
+_RATIO_NOISE = Decimal("1e-9")
+
+
+def _increments(value: Decimal, increment: Decimal, rounding: str) -> Decimal:
+    """How many whole increments `value` is, ignoring float noise."""
+    ratio = value / increment
+    nearest = ratio.to_integral_value(rounding=ROUND_HALF_UP)
+    if abs(ratio - nearest) <= _RATIO_NOISE:
+        return nearest
+    return ratio.to_integral_value(rounding=rounding)
 
 
 @dataclass(frozen=True)
@@ -18,7 +35,7 @@ class InstrumentRules:
 
     def floor_qty(self, qty: float | Decimal) -> Decimal:
         value = Decimal(str(qty))
-        units = (value / self.qty_step).to_integral_value(rounding=ROUND_FLOOR)
+        units = _increments(value, self.qty_step, ROUND_FLOOR)
         quantized = units * self.qty_step
         if quantized < self.min_order_qty:
             raise ValueError(
@@ -33,12 +50,12 @@ class InstrumentRules:
 
     def floor_price(self, price: float | Decimal) -> Decimal:
         value = Decimal(str(price))
-        units = (value / self.tick_size).to_integral_value(rounding=ROUND_FLOOR)
+        units = _increments(value, self.tick_size, ROUND_FLOOR)
         return units * self.tick_size
 
     def ceil_price(self, price: float | Decimal) -> Decimal:
         value = Decimal(str(price))
-        units = (value / self.tick_size).to_integral_value(rounding=ROUND_CEILING)
+        units = _increments(value, self.tick_size, ROUND_CEILING)
         return units * self.tick_size
 
 

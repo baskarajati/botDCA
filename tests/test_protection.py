@@ -77,3 +77,35 @@ def test_repaired_marks_the_position_as_covered_again() -> None:
     assert fixed.status is ProtectionStatus.REPAIRED
     assert fixed.protected_qty == 0.3
     assert fixed.describe()["detail"] == "protection rebuilt"
+
+
+def test_a_take_profit_that_matches_the_plan_must_still_cover_the_position() -> None:
+    """The plan is not the yardstick; the position is.
+
+    A planned quantity that is itself short of the position agrees with the
+    resting order, so comparing the two calls the basket protected while part of
+    it has no exit at all.
+    """
+    assessment = assess_protection(
+        symbol="HYPEUSDT",
+        position_qty=0.90,
+        open_orders=[_tp(qty=0.89)],
+        expected_qty=0.89,
+    )
+
+    assert assessment.status is ProtectionStatus.MISSING
+    assert not assessment.healthy
+    assert "unprotected" in assessment.detail
+    assert assessment.protected_qty == 0.89
+
+
+def test_a_take_profit_larger_than_the_position_is_not_reported_as_missing() -> None:
+    """Over-coverage is a different problem; reduce-only caps the fill anyway."""
+    assessment = assess_protection(
+        symbol="HYPEUSDT",
+        position_qty=0.30,
+        open_orders=[_tp(qty=0.30)],
+        expected_qty=0.30,
+    )
+
+    assert assessment.status is ProtectionStatus.PROTECTED

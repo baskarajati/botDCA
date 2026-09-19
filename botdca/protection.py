@@ -127,6 +127,24 @@ def assess_protection(
             ),
         )
 
+    # A take profit that matches the plan must still cover the position. When the
+    # planned quantity is itself short of the position, comparing only against
+    # the plan agrees with itself and calls the basket protected, so the gap is
+    # invisible to the one check meant to find it. Measure against the position.
+    position_tolerance = max(1e-9, abs(position_qty) * qty_relative_tolerance)
+    if protected_qty < position_qty - position_tolerance:
+        return ProtectionAssessment(
+            status=ProtectionStatus.MISSING,
+            symbol=symbol,
+            position_qty=position_qty,
+            protected_qty=protected_qty,
+            resting_tp_orders=len(tp_orders),
+            detail=(
+                f"resting take profit covers {protected_qty} of the {position_qty} "
+                f"{symbol} position; the remainder is unprotected"
+            ),
+        )
+
     return ProtectionAssessment(
         status=ProtectionStatus.PROTECTED,
         symbol=symbol,

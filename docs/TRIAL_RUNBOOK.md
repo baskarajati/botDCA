@@ -121,6 +121,13 @@ readiness and repaired when that is unambiguously safe. Two resting reduce-only
 exits are never created: if several are found, the basket is reported as
 `protection_ambiguous` and held for a human rather than adding a third.
 
+Coverage is measured against the **position**, not against the quantity the bot
+intended to place. A planned quantity that is short of the position would agree
+with the resting order, so comparing the two would call the basket protected
+while part of it had no exit. That shortfall is what exchange step rounding can
+produce: a basket quantity is a float sum of fills, and a sum that drifts a
+fraction below a step boundary used to round down a whole step.
+
 ## Trial mode
 
 `BOT_TRIAL_MODE=true` constrains the first live run. It can only ever tighten
