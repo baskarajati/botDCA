@@ -98,3 +98,46 @@ def test_quantity_below_minimum_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="below"):
         rules.floor_qty(0.099)
+
+
+def _hype_rules(step: str) -> InstrumentRules:
+    return InstrumentRules(
+        symbol="HYPEUSDT",
+        tick_size=Decimal("0.01"),
+        qty_step=Decimal(step),
+        min_order_qty=Decimal("0.01"),
+        min_notional_value=Decimal(5),
+        max_market_order_qty=None,
+    )
+
+
+def test_a_float_summed_quantity_does_not_lose_a_whole_step() -> None:
+    """A basket's quantity is a float sum of fills, and float sums drift.
+
+    0.30 + 0.60 is 0.8999999999999999. Rounding that ratio down dropped a whole
+    0.01 step, so the take profit covered 0.89 of a 0.90 position and the
+    remainder survived the exit.
+    """
+    rules = _hype_rules("0.01")
+    drifted = 0.30 + 0.60
+
+    assert drifted != 0.90  # the premise: the sum really is short
+    assert rules.floor_qty(drifted) == Decimal("0.90")
+    assert rules.floor_qty(0.8999999999999999) == Decimal("0.90")
+
+
+def test_a_genuinely_smaller_quantity_still_rounds_down() -> None:
+    """Absorbing float noise must not become rounding up."""
+    rules = _hype_rules("0.01")
+
+    assert rules.floor_qty(0.899) == Decimal("0.89")
+    assert rules.floor_qty(0.8999) == Decimal("0.89")
+
+
+def test_prices_also_survive_float_drift() -> None:
+    rules = _hype_rules("0.01")
+
+    assert rules.floor_price(0.1 + 0.2) == Decimal("0.30")
+    assert rules.ceil_price(0.1 + 0.2) == Decimal("0.30")
+    assert rules.floor_price(91.194) == Decimal("91.19")
+    assert rules.ceil_price(91.191) == Decimal("91.20")
