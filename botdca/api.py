@@ -119,6 +119,9 @@ async def lifespan(app: FastAPI):
     deployments: list[LiveWorkerDeployment] = []
     app.state.live_worker = None
     app.state.live_workers = {}
+    #: Why the live worker did not start, or None. An unapproved configuration
+    #: blocks the worker and leaves the API serving so it can be approved.
+    app.state.live_worker_blocked = None
     app.state.portfolio_coordinator = None
     app.state.alert_dispatcher = None
     app.state.event_store = None
@@ -166,8 +169,12 @@ async def lifespan(app: FastAPI):
             testnet=settings.bybit_testnet,
             mainnet_preflight_approved=settings.bot_mainnet_preflight_approved,
         )
-        if not gate.allowed:
-            raise RuntimeError("Live worker startup blocked: " + " ".join(gate.errors()))
+        # Refuse the worker, never the API. Activation can only be advanced
+        # through this service, so killing the API here removes the one control
+        # that resolves the refusal, and the Compose restart policy then retries
+        # the same failure forever. Serve, and say why.
+        app.state.live_worker_blocked = None if gate.allowed else " ".join(gate.errors())
+    if settings.bot_start_live_worker and app.state.live_worker_blocked is None:
         try:
             # ONE coordinator and ONE alert dispatcher for the whole process.
             # A coordinator per symbol would only ever see its own exposure, so
@@ -643,6 +650,7 @@ def health() -> dict:
         "live_worker_enabled": settings.bot_start_live_worker,
         "live_worker_running": bool(workers) and all(worker.running for worker in workers.values()),
         "live_worker_has_error": any(worker.last_error for worker in workers.values()),
+        "live_worker_blocked": getattr(app.state, "live_worker_blocked", None),
         "configured_symbols": list(_strategy_runtimes()),
     }
 

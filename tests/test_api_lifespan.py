@@ -71,11 +71,12 @@ async def test_api_lifespan_refuses_to_start_a_draft_configuration(monkeypatch) 
         api, "build_live_worker_deployment", lambda settings, runtime, **kwargs: deployment
     )
 
-    with pytest.raises(RuntimeError, match="Live worker startup blocked"):
-        async with api.lifespan(api.app):
-            pass
-
-    assert deployment.started is False
+    # The worker must not start, and the API must stay up: advancing activation
+    # is only possible through this service, so killing it strands the operator.
+    async with api.lifespan(api.app):
+        assert deployment.started is False
+        assert "draft" in api.app.state.live_worker_blocked
+        assert api.app.state.live_worker is None
 
 
 @pytest.mark.asyncio
@@ -91,11 +92,10 @@ async def test_api_lifespan_refuses_mainnet_without_operator_preflight(monkeypat
         api, "default_strategy_slots", lambda symbol, margin: _approved_slots(symbol, margin)
     )
 
-    with pytest.raises(RuntimeError, match="Live worker startup blocked"):
-        async with api.lifespan(api.app):
-            pass
-
-    assert deployment.started is False
+    async with api.lifespan(api.app):
+        assert deployment.started is False
+        assert "preflight" in api.app.state.live_worker_blocked
+        assert api.app.state.live_worker is None
 
 
 @pytest.mark.asyncio

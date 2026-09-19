@@ -189,6 +189,35 @@ def test_activation_advances_one_step_and_never_jumps_to_mainnet(client):
     ).json()["gate"]["status"] == "approved_for_testnet"
 
 
+def test_an_unapproved_configuration_blocks_the_worker_but_not_the_console(
+    monkeypatch, tmp_path
+):
+    """The one control that fixes a draft configuration must survive it.
+
+    Advancing activation is only possible through this service. Refusing to
+    start the API strands the operator, and the Compose restart policy then
+    retries the same failure forever.
+    """
+    built = _client(monkeypatch, tmp_path)
+    # _client pins the flag off, so arm it before lifespan runs.
+    monkeypatch.setattr(api.settings, "bot_start_live_worker", True)
+    with built as client:
+        health = client.get("/health").json()
+        assert health["live_worker_running"] is False
+        assert "draft" in health["live_worker_blocked"]
+
+        # The console is reachable, and so is the fix.
+        assert client.get("/api/v1/operations").status_code == 200
+        assert client.put(
+            "/api/v1/configuration/activation", json={"status": "validated"}
+        ).json()["gate"]["status"] == "validated"
+
+
+def test_an_approved_configuration_reports_no_block(monkeypatch, tmp_path):
+    with _client(monkeypatch, tmp_path) as client:
+        assert client.get("/health").json()["live_worker_blocked"] is None
+
+
 def test_alerts_endpoint_returns_persisted_alerts(client):
     store = api._event_store()
     store.record_alert(
