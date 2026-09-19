@@ -482,6 +482,16 @@ VPS Compose profile keeps the API port on loopback.
 or maximum-loss limit. Preview places no orders and is not a paper-trading simulator.
 See [the trial runbook](docs/TRIAL_RUNBOOK.md) for setup, data limitations and activation gates.
 
+## Deploy to a VPS
+
+```bash
+scripts/deploy-vps.sh        # deploy main; any ref, tag or commit also works
+```
+
+Release-directory deployment using the hardened Compose profile. Deploys in
+preview and refuses to run while any activation flag is enabled. See
+[docs/TRIAL_RUNBOOK.md](docs/TRIAL_RUNBOOK.md).
+
 ## Local development
 
 ```bash

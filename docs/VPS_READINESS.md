@@ -75,6 +75,10 @@ Before writing to the VPS:
     symbols, DCA depths and portfolio figures, and never contain credentials.
 15. Run the optional Bybit testnet lifecycle harness before any funded order.
     It is excluded from CI and refuses to run outside testnet/demo.
+16. Use `scripts/deploy-vps.sh` for the redeploy itself. It pins one commit,
+    seeds only settings the release introduced, refuses to deploy while an
+    activation flag is on, and repoints `current` only after the containers are
+    healthy. See docs/TRIAL_RUNBOOK.md.
 
 ## Deployment result
 
